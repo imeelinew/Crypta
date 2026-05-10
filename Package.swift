@@ -19,6 +19,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("AVKit"),
                 .linkedFramework("CryptoKit"),
+                .linkedFramework("LocalAuthentication"),
                 .linkedFramework("Security")
             ]
         )

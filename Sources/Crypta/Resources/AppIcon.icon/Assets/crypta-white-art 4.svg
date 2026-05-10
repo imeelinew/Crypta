@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Crypta white abstract mark</title>
+  <desc id="desc">A white abstract Crypta mark in a draw-on Apple SF Symbols inspired style.</desc>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g opacity="0.32" stroke="#ffffff">
+      <path d="M96 700 L650 631" stroke-width="54"/>
+      <path d="M78 502 L180 604 M180 502 L78 604" stroke-width="48"/>
+    </g>
+
+    <g id="crypta-mark" stroke="#ffffff">
+      <path
+        stroke-width="66"
+        d="M676 292
+           C596 214 452 216 351 291
+           C244 370 229 510 316 622
+           C386 713 512 760 567 835
+           C594 872 566 916 501 920
+           C401 926 336 865 347 778
+           C363 654 493 560 648 524
+           C744 502 822 514 866 558"/>
+
+      <path
+        stroke-width="54"
+        d="M548 602
+           C614 548 706 518 790 544
+           C850 562 883 604 925 592
+           C962 582 977 548 954 531
+           C934 516 898 531 874 562"/>
+
+      <path
+        stroke-width="54"
+        d="M852 585
+           C904 626 956 637 996 608"/>
+    </g>
+    <g id="endpoint-seals" fill="#ffffff" stroke="none">
+      <circle cx="676" cy="292" r="33"/>
+      <circle cx="866" cy="558" r="33"/>
+      <circle cx="548" cy="602" r="27"/>
+      <circle cx="874" cy="562" r="27"/>
+      <circle cx="852" cy="585" r="27"/>
+      <circle cx="996" cy="608" r="27"/>
+    </g>
+  </g>
+</svg>
