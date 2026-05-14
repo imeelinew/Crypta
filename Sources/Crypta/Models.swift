@@ -151,7 +151,7 @@ extension Array where Element == CryptaVideo {
 
 struct PlaybackURL: Sendable {
     let url: URL
-    let temporary: Bool
+    let cleanupURL: URL?
 }
 
 enum CryptaError: LocalizedError {

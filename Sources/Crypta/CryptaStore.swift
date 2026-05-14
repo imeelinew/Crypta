@@ -138,25 +138,24 @@ final class CryptaStore: @unchecked Sendable {
         return video
     }
 
-    func preparePlaybackURL(for video: CryptaVideo, cleanCache: Bool = true) throws -> PlaybackURL {
+    func preparePlaybackURL(for video: CryptaVideo) throws -> PlaybackURL {
         try CryptaPaths.prepareDirectories()
         switch video.storageState {
         case .plain:
             guard let plainFileName = video.plainFileName else { throw CryptaError.missingVideoFile }
             return PlaybackURL(
                 url: CryptaPaths.moviesVault.appendingPathComponent(plainFileName, isDirectory: false),
-                temporary: false
+                cleanupURL: nil
             )
         case .encrypted:
             guard let encryptedFileName = video.encryptedFileName else { throw CryptaError.missingVideoFile }
-            if cleanCache {
-                try CryptaPaths.cleanPlaybackCache()
-            }
             let source = CryptaPaths.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
             let playbackName = "\(UUID().uuidString).\(video.originalExtension.isEmpty ? "mov" : video.originalExtension)"
-            let playbackURL = CryptaPaths.playbackCache.appendingPathComponent(playbackName, isDirectory: false)
+            let playbackDirectory = CryptaPaths.playbackCache.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: playbackDirectory, withIntermediateDirectories: true)
+            let playbackURL = playbackDirectory.appendingPathComponent(playbackName, isDirectory: false)
             try decryptFile(from: source, to: playbackURL)
-            return PlaybackURL(url: playbackURL, temporary: true)
+            return PlaybackURL(url: playbackURL, cleanupURL: playbackDirectory)
         }
     }
 
@@ -362,8 +361,8 @@ final class CryptaStore: @unchecked Sendable {
     }
 
     private static func length(fromPrefix data: Data) -> Int {
-        data.withUnsafeBytes { rawBuffer in
-            Int(rawBuffer.load(as: UInt32.self).bigEndian)
+        data.reduce(0) { partial, byte in
+            (partial << 8) | Int(byte)
         }
     }
 

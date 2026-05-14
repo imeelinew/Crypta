@@ -121,12 +121,17 @@ final class CryptaLibrary {
             let playback = try await Task.detached(priority: .userInitiated) {
                 try store.preparePlaybackURL(for: video)
             }.value
-            playerWindowController = PlayerWindowController(
+            playerWindowController?.close()
+            let playerWindowController = PlayerWindowController(
                 title: video.displayName,
                 url: playback.url,
-                temporaryURL: playback.temporary ? playback.url : nil
+                cleanupURL: playback.cleanupURL,
+                onClose: { [weak self] in
+                    self?.playerWindowController = nil
+                }
             )
-            playerWindowController?.show()
+            self.playerWindowController = playerWindowController
+            playerWindowController.show()
         } catch {
             errorMessage = "播放失败：\(error.localizedDescription)"
         }

@@ -6,10 +6,10 @@ enum VideoThumbnailLoader {
         await Task.detached(priority: .utility) {
             do {
                 let store = CryptaStore()
-                let playback = try store.preparePlaybackURL(for: video, cleanCache: false)
+                let playback = try store.preparePlaybackURL(for: video)
                 defer {
-                    if playback.temporary {
-                        try? FileManager.default.removeItem(at: playback.url)
+                    if let cleanupURL = playback.cleanupURL {
+                        try? FileManager.default.removeItem(at: cleanupURL)
                     }
                 }
                 return try await image(from: playback.url)
