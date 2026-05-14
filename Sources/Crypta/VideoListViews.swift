@@ -57,7 +57,13 @@ struct VideoListPage: View {
                 }
                 .listStyle(.inset)
                 .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background {
+                    Color(nsColor: .windowBackgroundColor)
+                    VideoListDoubleClickInstaller(videos: library.visibleVideos) { video in
+                        library.selectedVideoID = video.id
+                        Task { await library.play(video) }
+                    }
+                }
             }
         }
         .navigationTitle(library.selectedSection.title)
@@ -75,6 +81,84 @@ struct VideoListPage: View {
         case .plain: return "拖拽以导入视频"
         case .encrypted: return "拖拽以导入加密视频"
         }
+    }
+}
+
+private struct VideoListDoubleClickInstaller: NSViewRepresentable {
+    let videos: [CryptaVideo]
+    let onDoubleClick: (CryptaVideo) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(videos: videos, onDoubleClick: onDoubleClick)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.attach(from: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.videos = videos
+        context.coordinator.onDoubleClick = onDoubleClick
+        DispatchQueue.main.async {
+            context.coordinator.attach(from: view)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var videos: [CryptaVideo]
+        var onDoubleClick: (CryptaVideo) -> Void
+        private weak var tableView: NSTableView?
+
+        init(videos: [CryptaVideo], onDoubleClick: @escaping (CryptaVideo) -> Void) {
+            self.videos = videos
+            self.onDoubleClick = onDoubleClick
+            super.init()
+        }
+
+        func attach(from view: NSView) {
+            guard let tableView = view.nearestTableView(), self.tableView !== tableView else { return }
+            self.tableView = tableView
+            tableView.target = self
+            tableView.doubleAction = #selector(handleDoubleClick(_:))
+        }
+
+        @objc private func handleDoubleClick(_ sender: NSTableView) {
+            let row = sender.clickedRow
+            guard videos.indices.contains(row) else { return }
+            onDoubleClick(videos[row])
+        }
+    }
+}
+
+private extension NSView {
+    func nearestTableView() -> NSTableView? {
+        var candidate: NSView? = self
+        while let view = candidate {
+            if let tableView = view.firstDescendant(ofType: NSTableView.self) {
+                return tableView
+            }
+            candidate = view.superview
+        }
+        return nil
+    }
+
+    func firstDescendant<T: NSView>(ofType type: T.Type) -> T? {
+        if let typed = self as? T {
+            return typed
+        }
+
+        for subview in subviews {
+            if let typed = subview.firstDescendant(ofType: type) {
+                return typed
+            }
+        }
+
+        return nil
     }
 }
 
