@@ -32,7 +32,13 @@ struct VideoListPage: View {
 
     var body: some View {
         Group {
-            if library.visibleVideos.isEmpty {
+            if !library.encryptedSectionUnlocked {
+                LockedEncryptedSectionView(
+                    isAuthenticating: library.isAuthenticatingEncryptedSection
+                ) {
+                    Task { await library.unlockEncryptedSection() }
+                }
+            } else if library.visibleVideos.isEmpty {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: library.selectedSection.systemImage)
                 } description: {
@@ -75,6 +81,29 @@ struct VideoListPage: View {
 
     private var emptyDescription: String {
         "拖拽以导入加密视频"
+    }
+}
+
+private struct LockedEncryptedSectionView: View {
+    let isAuthenticating: Bool
+    let unlock: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            Text("已加密")
+                .font(.title3.weight(.semibold))
+
+            Button(isAuthenticating ? "正在验证" : "解锁视频") {
+                unlock()
+            }
+            .disabled(isAuthenticating)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

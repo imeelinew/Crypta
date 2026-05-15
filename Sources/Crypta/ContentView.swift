@@ -90,6 +90,10 @@ struct ContentView: View {
                 library.resetEncryptedSectionAccess()
             }
             .frame(width: 0, height: 0)
+            AppFocusObserver {
+                library.resetEncryptedSectionAccess()
+            }
+            .frame(width: 0, height: 0)
         }
         .task(id: library.toast) {
             guard let currentToast = library.toast else { return }
@@ -176,6 +180,54 @@ private extension CryptaToast {
         switch kind {
         case .success: return .primary
         case .error: return Color(red: 0.82, green: 0.18, blue: 0.18)
+        }
+    }
+}
+
+private struct AppFocusObserver: NSViewRepresentable {
+    let onResignActive: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onResignActive: onResignActive)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.startObserving()
+        return NSView()
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.onResignActive = onResignActive
+        context.coordinator.startObserving()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var onResignActive: () -> Void
+        private var isObserving = false
+
+        init(onResignActive: @escaping () -> Void) {
+            self.onResignActive = onResignActive
+            super.init()
+        }
+
+        func startObserving() {
+            guard !isObserving else { return }
+            isObserving = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(appDidResignActive(_:)),
+                name: NSApplication.didResignActiveNotification,
+                object: NSApp
+            )
+        }
+
+        @objc private func appDidResignActive(_ notification: Notification) {
+            onResignActive()
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
         }
     }
 }

@@ -23,11 +23,13 @@ final class CryptaLibrary {
     private var playerWindowController: PlayerWindowController?
 
     var visibleVideos: [CryptaVideo] {
-        videos.filter { $0.storageState == selectedSection.storageState }
+        guard encryptedSectionUnlocked else { return [] }
+        return videos.filter { $0.storageState == selectedSection.storageState }
     }
 
     var selectedVideo: CryptaVideo? {
-        videos.first { $0.id == selectedVideoID && $0.storageState == selectedSection.storageState }
+        guard encryptedSectionUnlocked else { return nil }
+        return videos.first { $0.id == selectedVideoID && $0.storageState == selectedSection.storageState }
     }
 
     var canActOnSelection: Bool {
@@ -48,8 +50,26 @@ final class CryptaLibrary {
         selectedSection = section
     }
 
+    func unlockEncryptedSection() async {
+        guard !encryptedSectionUnlocked, !isAuthenticatingEncryptedSection else { return }
+        isAuthenticatingEncryptedSection = true
+        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看加密视频")
+        isAuthenticatingEncryptedSection = false
+
+        if didAuthenticate {
+            encryptedSectionUnlocked = true
+            selectFirstVideoIfNeeded()
+        } else {
+            showToast("认证未通过", kind: .error)
+        }
+    }
+
     func resetEncryptedSectionAccess() {
         encryptedSectionUnlocked = false
+        selectedVideoID = nil
+        renameRequest = nil
+        deleteRequest = nil
+        playerWindowController?.close()
     }
 
     func importVideos(from urls: [URL]) async {
@@ -88,11 +108,13 @@ final class CryptaLibrary {
     }
 
     func playSelectedVideo() async {
+        guard encryptedSectionUnlocked else { return }
         guard let video = selectedVideo else { return }
         await play(video)
     }
 
     func play(_ video: CryptaVideo) async {
+        guard encryptedSectionUnlocked else { return }
         do {
             isWorking = true
             defer { isWorking = false }
@@ -118,6 +140,7 @@ final class CryptaLibrary {
     }
 
     func requestRename(_ video: CryptaVideo) {
+        guard encryptedSectionUnlocked else { return }
         renameRequest = RenameRequest(video: video)
     }
 
@@ -160,6 +183,7 @@ final class CryptaLibrary {
     }
 
     func confirmDeleteSelectedVideo() {
+        guard encryptedSectionUnlocked else { return }
         guard let selectedVideo else { return }
         deleteRequest = selectedVideo
     }
