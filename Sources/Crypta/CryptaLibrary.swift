@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -86,10 +87,10 @@ final class CryptaLibrary {
         defer { isImporting = false }
 
         var imported: [CryptaVideo] = []
+        let targetState = selectedSection.storageState
         for url in candidates {
             do {
                 let store = self.store
-                let targetState = selectedSection.storageState
                 let video = try await Task.detached(priority: .userInitiated) {
                     try await store.importVideo(from: url, storageState: targetState)
                 }.value
@@ -104,6 +105,9 @@ final class CryptaLibrary {
         videos.append(contentsOf: imported)
         videos = videos.sortedForDisplay()
         showToast("已导入 \(imported.count) 个视频")
+        if targetState == .encrypted {
+            playEncryptedVideoAddedSound()
+        }
         selectedVideoID = imported.first?.id
     }
 
@@ -164,6 +168,7 @@ final class CryptaLibrary {
         if didSucceed {
             selectFirstVideoIfNeeded()
             showToast("已加密")
+            playEncryptedVideoAddedSound()
         }
     }
 
@@ -237,5 +242,9 @@ final class CryptaLibrary {
         withAnimation(.spring(duration: 0.24, bounce: 0.18)) {
             toast = CryptaToast(message: message, kind: kind)
         }
+    }
+
+    private func playEncryptedVideoAddedSound() {
+        (NSSound(named: "Pebble") ?? NSSound(named: "Pop"))?.play()
     }
 }
