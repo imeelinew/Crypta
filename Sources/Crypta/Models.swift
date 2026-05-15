@@ -2,30 +2,20 @@ import Foundation
 import Security
 
 enum LibrarySection: String, CaseIterable, Identifiable, Hashable {
-    case plain
     case encrypted
 
     var id: String { rawValue }
 
     var title: String {
-        switch self {
-        case .plain: return "视频"
-        case .encrypted: return "加密视频"
-        }
+        "加密视频"
     }
 
     var systemImage: String {
-        switch self {
-        case .plain: return "video.fill"
-        case .encrypted: return "lock.fill"
-        }
+        "lock.fill"
     }
 
     var storageState: CryptaVideo.StorageState {
-        switch self {
-        case .plain: return .plain
-        case .encrypted: return .encrypted
-        }
+        .encrypted
     }
 }
 

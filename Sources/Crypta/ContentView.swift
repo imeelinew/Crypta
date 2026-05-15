@@ -151,27 +151,16 @@ struct ContentView: View {
     }
 
     private var transformTitle: String {
-        switch library.selectedSection {
-        case .plain: return "加密"
-        case .encrypted: return "解密"
-        }
+        "解密"
     }
 
     private var transformSystemImage: String {
-        switch library.selectedSection {
-        case .plain: return "lock.fill"
-        case .encrypted: return "lock.open.fill"
-        }
+        "lock.open.fill"
     }
 
     private func transformSelectedVideo() async {
         guard let video = library.selectedVideo else { return }
-        switch library.selectedSection {
-        case .plain:
-            await library.encrypt(video)
-        case .encrypted:
-            await library.decrypt(video)
-        }
+        await library.decrypt(video)
     }
 
     private var errorAlertBinding: Binding<Bool> {

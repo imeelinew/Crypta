@@ -5,7 +5,7 @@ import SwiftUI
 @Observable
 @MainActor
 final class CryptaLibrary {
-    private(set) var selectedSection: LibrarySection = .plain {
+    private(set) var selectedSection: LibrarySection = .encrypted {
         didSet { selectFirstVideoIfNeeded() }
     }
     var selectedVideoID: CryptaVideo.ID?
@@ -45,35 +45,11 @@ final class CryptaLibrary {
 
     func selectSection(_ section: LibrarySection) async {
         guard section != selectedSection else { return }
-
-        switch section {
-        case .plain:
-            selectedSection = .plain
-        case .encrypted:
-            if encryptedSectionUnlocked {
-                selectedSection = .encrypted
-                return
-            }
-
-            guard !isAuthenticatingEncryptedSection else { return }
-            isAuthenticatingEncryptedSection = true
-            let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看加密视频")
-            isAuthenticatingEncryptedSection = false
-
-            if didAuthenticate {
-                encryptedSectionUnlocked = true
-                selectedSection = .encrypted
-            } else {
-                showToast("认证未通过", kind: .error)
-            }
-        }
+        selectedSection = section
     }
 
     func resetEncryptedSectionAccess() {
         encryptedSectionUnlocked = false
-        if selectedSection == .encrypted {
-            selectedSection = .plain
-        }
     }
 
     func importVideos(from urls: [URL]) async {

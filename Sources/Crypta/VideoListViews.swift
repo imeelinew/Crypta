@@ -70,17 +70,11 @@ struct VideoListPage: View {
     }
 
     private var emptyTitle: String {
-        switch library.selectedSection {
-        case .plain: return "无视频"
-        case .encrypted: return "无加密视频"
-        }
+        "无加密视频"
     }
 
     private var emptyDescription: String {
-        switch library.selectedSection {
-        case .plain: return "拖拽以导入视频"
-        case .encrypted: return "拖拽以导入加密视频"
-        }
+        "拖拽以导入加密视频"
     }
 }
 
