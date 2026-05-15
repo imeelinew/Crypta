@@ -24,9 +24,10 @@ enum VideoThumbnailLoader {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 192, height: 108)
+        let requestedTime = try await thumbnailTime(for: asset)
         let cgImage: CGImage = try await withCheckedThrowingContinuation { continuation in
             generator.generateCGImageAsynchronously(
-                for: CMTime(seconds: 0.2, preferredTimescale: 600)
+                for: requestedTime
             ) { cgImage, _, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -38,5 +39,12 @@ enum VideoThumbnailLoader {
             }
         }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    private static func thumbnailTime(for asset: AVURLAsset) async throws -> CMTime {
+        let durationTime = try await asset.load(.duration)
+        let duration = CMTimeGetSeconds(durationTime)
+        let seconds = duration.isFinite && duration > 0 ? duration / 2 : 0.2
+        return CMTime(seconds: seconds, preferredTimescale: 600)
     }
 }
