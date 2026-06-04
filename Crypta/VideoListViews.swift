@@ -51,7 +51,7 @@ struct VideoListPage: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.clear)
             } else {
-                List(selection: $library.selectedVideoID) {
+                List(selection: $library.selectedVideoIDs) {
                     ForEach(library.visibleVideos) { video in
                         VideoRow(video: video)
                             .tag(video.id)
@@ -60,9 +60,6 @@ struct VideoListPage: View {
                                 Button("重命名") {
                                     library.requestRename(video)
                                 }
-                            }
-                            .onTapGesture {
-                                library.selectedVideoID = video.id
                             }
                     }
                 }
@@ -73,11 +70,14 @@ struct VideoListPage: View {
                     VideoListInteractionInstaller(
                         videos: library.visibleVideos,
                         onDoubleClick: { video in
-                            library.selectedVideoID = video.id
+                            library.selectOnly(video)
                             Task { await library.play(video) }
                         },
                         onSpacePreview: {
                             Task { await library.previewSelectedVideo() }
+                        },
+                        onSelectAll: {
+                            library.selectAllVisibleVideos()
                         }
                     )
                 }
@@ -123,12 +123,14 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
     let videos: [CryptaVideo]
     let onDoubleClick: (CryptaVideo) -> Void
     let onSpacePreview: () -> Void
+    let onSelectAll: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             videos: videos,
             onDoubleClick: onDoubleClick,
-            onSpacePreview: onSpacePreview
+            onSpacePreview: onSpacePreview,
+            onSelectAll: onSelectAll
         )
     }
 
@@ -144,6 +146,7 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
         context.coordinator.videos = videos
         context.coordinator.onDoubleClick = onDoubleClick
         context.coordinator.onSpacePreview = onSpacePreview
+        context.coordinator.onSelectAll = onSelectAll
         DispatchQueue.main.async {
             context.coordinator.attach(from: view)
         }
@@ -158,17 +161,20 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
         var videos: [CryptaVideo]
         var onDoubleClick: (CryptaVideo) -> Void
         var onSpacePreview: () -> Void
+        var onSelectAll: () -> Void
         private weak var tableView: NSTableView?
         private var keyMonitor: Any?
 
         init(
             videos: [CryptaVideo],
             onDoubleClick: @escaping (CryptaVideo) -> Void,
-            onSpacePreview: @escaping () -> Void
+            onSpacePreview: @escaping () -> Void,
+            onSelectAll: @escaping () -> Void
         ) {
             self.videos = videos
             self.onDoubleClick = onDoubleClick
             self.onSpacePreview = onSpacePreview
+            self.onSelectAll = onSelectAll
             super.init()
         }
 
@@ -180,6 +186,7 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
             }
             self.tableView = tableView
             tableView.applyTransparentListBackground()
+            tableView.allowsMultipleSelection = true
             tableView.target = self
             tableView.doubleAction = #selector(handleDoubleClick(_:))
             startMonitoringSpaceKey()
@@ -202,20 +209,28 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
                     return event
                 }
                 MainActor.assumeIsolated {
-                    self?.onSpacePreview()
+                    self?.handleKeyEvent(event)
                 }
                 return nil
             }
         }
 
         private func shouldHandleSpaceKey(_ event: NSEvent) -> Bool {
-            guard isSpaceKeyEvent(event), let tableView, event.window === tableView.window else {
+            guard isSpaceKeyEvent(event) || isSelectAllEvent(event), let tableView, event.window === tableView.window else {
                 return false
             }
             guard tableView.window?.firstResponder is NSTextView == false else {
                 return false
             }
-            return tableView.selectedRow >= 0
+            return isSelectAllEvent(event) || tableView.selectedRow >= 0
+        }
+
+        private func handleKeyEvent(_ event: NSEvent) {
+            if isSelectAllEvent(event) {
+                onSelectAll()
+            } else {
+                onSpacePreview()
+            }
         }
 
         private func isSpaceKeyEvent(_ event: NSEvent) -> Bool {
@@ -224,6 +239,13 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
                 .subtracting(.capsLock)
             guard flags.isEmpty else { return false }
             return event.keyCode == 49 || event.charactersIgnoringModifiers == " "
+        }
+
+        private func isSelectAllEvent(_ event: NSEvent) -> Bool {
+            let flags = event.modifierFlags
+                .intersection(.deviceIndependentFlagsMask)
+                .subtracting(.capsLock)
+            return flags == .command && event.charactersIgnoringModifiers?.lowercased() == "a"
         }
 
         func stopMonitoringSpaceKey() {

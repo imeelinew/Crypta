@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -18,7 +19,7 @@ struct ContentView: View {
 
             ToolbarItem {
                 Button {
-                    Task { await transformSelectedVideo() }
+                    Task { await decryptSelectedVideos() }
                 } label: {
                     Label(transformTitle, systemImage: transformSystemImage)
                 }
@@ -114,16 +115,19 @@ struct ContentView: View {
                 Task { await library.rename(request, to: newName) }
             }
         }
-        .alert("删除视频？", isPresented: deleteAlertBinding, presenting: library.deleteRequest) { video in
+        .alert("删除视频？", isPresented: deleteAlertBinding, presenting: library.deleteRequest) { request in
             Button("取消", role: .cancel) {
                 library.deleteRequest = nil
             }
             Button("删除", role: .destructive) {
-                Task { await library.delete(video) }
+                Task { await library.delete(request) }
             }
-        } message: { video in
-            let message = "将从 Crypta 中删除“\(video.displayName)”。"
-            Text(message)
+        } message: { request in
+            if request.videos.count == 1, let video = request.primaryVideo {
+                Text("将从 Crypta 中删除“\(video.displayName)”。")
+            } else {
+                Text("将从 Crypta 中删除所选 \(request.videos.count) 个视频。")
+            }
         }
         .alert("出错了", isPresented: errorAlertBinding, presenting: library.errorMessage) { _ in
             Button("好") {
@@ -159,16 +163,31 @@ struct ContentView: View {
     }
 
     private var transformTitle: String {
-        "解密"
+        library.selectedVideoCount > 1 ? "解密所选 \(library.selectedVideoCount) 个" : "解密"
     }
 
     private var transformSystemImage: String {
         "lock.open.fill"
     }
 
-    private func transformSelectedVideo() async {
-        guard let video = library.selectedVideo else { return }
-        await library.decrypt(video)
+    @MainActor
+    private func decryptSelectedVideos() async {
+        guard let destinationDirectory = selectDecryptionDestination() else { return }
+        await library.decryptSelectedVideos(to: destinationDirectory)
+    }
+
+    @MainActor
+    private func selectDecryptionDestination() -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "选择解密输出位置"
+        panel.prompt = "解密到这里"
+        panel.message = "解密后的视频会从 Crypta 加密库中移除。"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     private var errorAlertBinding: Binding<Bool> {

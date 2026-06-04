@@ -306,7 +306,11 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         return updated
     }
 
-    func decryptEncryptedVideo(_ video: CryptaVideo) throws -> CryptaVideo {
+    func exportAndRemoveDecryptedVideo(_ video: CryptaVideo, to destinationDirectory: URL) throws -> URL {
+        guard !destinationDirectory.isInsideOrEqual(to: locations.vaultPackage) else {
+            throw CryptaError.invalidExportDestination
+        }
+
         var index = try loadIndex()
         guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }),
               let encryptedFileName = index.videos[indexPosition].encryptedFileName else {
@@ -314,21 +318,30 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         }
 
         let encryptedURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
-        let plainFileName = uniquePlainFileName(
+        let plainFileName = uniqueFileName(
             displayName: index.videos[indexPosition].displayName,
-            extensionName: index.videos[indexPosition].originalExtension
+            extensionName: index.videos[indexPosition].originalExtension,
+            in: destinationDirectory
         )
-        let plainURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
-        try decryptFile(from: encryptedURL, to: plainURL)
+        let finalURL = destinationDirectory.appendingPathComponent(plainFileName, isDirectory: false)
+        let temporaryURL = destinationDirectory.appendingPathComponent(
+            ".crypta-export-\(UUID().uuidString).tmp",
+            isDirectory: false
+        )
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        try decryptFile(from: encryptedURL, to: temporaryURL)
+        do {
+            try FileManager.default.moveItem(at: temporaryURL, to: finalURL)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
 
-        var updated = index.videos[indexPosition]
-        updated.storageState = .plain
-        updated.plainFileName = plainFileName
-        updated.encryptedFileName = nil
-        index.videos[indexPosition] = updated
+        index.videos.remove(at: indexPosition)
         try saveIndex(index)
         try? FileManager.default.removeItem(at: encryptedURL)
-        return updated
+        deleteThumbnail(for: video)
+        return finalURL
     }
 
     func delete(_ video: CryptaVideo) throws {
@@ -442,6 +455,10 @@ nonisolated final class CryptaStore: @unchecked Sendable {
     }
 
     private func uniquePlainFileName(displayName: String, extensionName: String) -> String {
+        uniqueFileName(displayName: displayName, extensionName: extensionName, in: locations.moviesVault)
+    }
+
+    private func uniqueFileName(displayName: String, extensionName: String, in directory: URL) -> String {
         let cleanedExtension = extensionName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
         let extensionSuffix = cleanedExtension.isEmpty ? "" : ".\(cleanedExtension)"
         var base = sanitizedFileName(displayName).nonEmptyValue ?? "Video"
@@ -452,7 +469,7 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         let suffix = cleanedExtension.isEmpty ? "" : ".\(cleanedExtension)"
         var candidate = "\(cleanedBase)\(suffix)"
         var counter = 2
-        while FileManager.default.fileExists(atPath: locations.moviesVault.appendingPathComponent(candidate).path) {
+        while FileManager.default.fileExists(atPath: directory.appendingPathComponent(candidate).path) {
             candidate = "\(cleanedBase) \(counter)\(suffix)"
             counter += 1
         }
@@ -574,6 +591,14 @@ nonisolated final class CryptaStore: @unchecked Sendable {
 nonisolated private extension String {
     var nonEmptyValue: String? {
         isEmpty ? nil : self
+    }
+}
+
+nonisolated private extension URL {
+    func isInsideOrEqual(to directory: URL) -> Bool {
+        let path = standardizedFileURL.path
+        let directoryPath = directory.standardizedFileURL.path
+        return path == directoryPath || path.hasPrefix(directoryPath + "/")
     }
 }
 

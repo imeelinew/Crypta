@@ -8,9 +8,12 @@ final class CryptaLibrary {
     private(set) var selectedSection: LibrarySection = .encrypted {
         didSet { selectFirstVideoIfNeeded() }
     }
-    var selectedVideoID: CryptaVideo.ID?
+    var selectedVideoIDs: Set<CryptaVideo.ID> = [] {
+        didSet { normalizePrimarySelection() }
+    }
+    private var primarySelectedVideoID: CryptaVideo.ID?
     var renameRequest: RenameRequest?
-    var deleteRequest: CryptaVideo?
+    var deleteRequest: DeleteRequest?
     var toast: CryptaToast?
     var searchText = ""
     private(set) var videos: [CryptaVideo] = []
@@ -37,11 +40,24 @@ final class CryptaLibrary {
 
     var selectedVideo: CryptaVideo? {
         guard encryptedSectionUnlocked else { return nil }
-        return videos.first { $0.id == selectedVideoID && $0.storageState == selectedSection.storageState }
+        if let primarySelectedVideoID,
+           let primary = visibleVideos.first(where: { $0.id == primarySelectedVideoID && selectedVideoIDs.contains($0.id) }) {
+            return primary
+        }
+        return selectedVideos.first
+    }
+
+    var selectedVideos: [CryptaVideo] {
+        guard encryptedSectionUnlocked else { return [] }
+        return visibleVideos.filter { selectedVideoIDs.contains($0.id) }
+    }
+
+    var selectedVideoCount: Int {
+        selectedVideos.count
     }
 
     var canActOnSelection: Bool {
-        selectedVideo != nil && !isImporting && !isWorking
+        !selectedVideos.isEmpty && !isImporting && !isWorking
     }
 
     func load() async {
@@ -85,7 +101,8 @@ final class CryptaLibrary {
 
     func resetEncryptedSectionAccess() {
         encryptedSectionUnlocked = false
-        selectedVideoID = nil
+        selectedVideoIDs.removeAll()
+        primarySelectedVideoID = nil
         renameRequest = nil
         deleteRequest = nil
         quickLookPreviewController.close()
@@ -126,7 +143,10 @@ final class CryptaLibrary {
         if targetState == .encrypted {
             playEncryptedVideoAddedSound()
         }
-        selectedVideoID = imported.first?.id
+        if let firstImportedID = imported.first?.id {
+            selectedVideoIDs = [firstImportedID]
+            primarySelectedVideoID = firstImportedID
+        }
     }
 
     func playSelectedVideo() async {
@@ -224,24 +244,102 @@ final class CryptaLibrary {
         }
     }
 
-    func decrypt(_ video: CryptaVideo) async {
-        guard video.storageState == .encrypted else { return }
-        let didSucceed = await transform(video) { store, video in
-            try store.decryptEncryptedVideo(video)
+    func decryptSelectedVideos(to destinationDirectory: URL) async {
+        let targets = selectedVideos.filter { $0.storageState == .encrypted }
+        guard !targets.isEmpty else { return }
+
+        isWorking = true
+        defer { isWorking = false }
+
+        let store = self.store
+        var succeeded: [CryptaVideo] = []
+        var failedCount = 0
+
+        for video in targets {
+            do {
+                if quickLookPreviewController.isPreviewing(video) {
+                    quickLookPreviewController.close()
+                }
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try store.exportAndRemoveDecryptedVideo(video, to: destinationDirectory)
+                }.value
+                succeeded.append(video)
+            } catch {
+                failedCount += 1
+            }
         }
-        if didSucceed {
+
+        if !succeeded.isEmpty {
+            let succeededIDs = Set(succeeded.map(\.id))
+            videos.removeAll { succeededIDs.contains($0.id) }
+            selectedVideoIDs.subtract(succeededIDs)
+            for video in succeeded {
+                VideoThumbnailLoader.removeCachedThumbnail(for: video)
+            }
             selectFirstVideoIfNeeded()
-            showToast("已解密")
+        }
+
+        if failedCount > 0 {
+            showToast("已解密 \(succeeded.count) 个，失败 \(failedCount) 个", kind: .error)
+            errorMessage = "有 \(failedCount) 个视频解密失败，失败项仍保留在加密库中。"
+        } else {
+            showToast("已解密 \(succeeded.count) 个")
         }
     }
 
     func confirmDeleteSelectedVideo() {
         guard encryptedSectionUnlocked else { return }
-        guard let selectedVideo else { return }
-        deleteRequest = selectedVideo
+        let selectedVideos = selectedVideos
+        guard !selectedVideos.isEmpty else { return }
+        deleteRequest = DeleteRequest(videos: selectedVideos)
     }
 
-    func delete(_ video: CryptaVideo) async {
+    func delete(_ request: DeleteRequest) async {
+        var deleted: [CryptaVideo] = []
+        var failedCount = 0
+        for video in request.videos {
+            do {
+                if quickLookPreviewController.isPreviewing(video) {
+                    quickLookPreviewController.close()
+                }
+                try store.delete(video)
+                deleted.append(video)
+            } catch {
+                failedCount += 1
+            }
+        }
+
+        if !deleted.isEmpty {
+            let deletedIDs = Set(deleted.map(\.id))
+            videos.removeAll { deletedIDs.contains($0.id) }
+            selectedVideoIDs.subtract(deletedIDs)
+            for video in deleted {
+                VideoThumbnailLoader.removeCachedThumbnail(for: video)
+            }
+            deleteRequest = nil
+            selectFirstVideoIfNeeded()
+        }
+
+        if failedCount > 0 {
+            showToast("已删除 \(deleted.count) 个，失败 \(failedCount) 个", kind: .error)
+            errorMessage = "有 \(failedCount) 个视频删除失败。"
+        } else {
+            showToast("已删除")
+        }
+    }
+
+    func selectOnly(_ video: CryptaVideo) {
+        selectedVideoIDs = [video.id]
+        primarySelectedVideoID = video.id
+    }
+
+    func selectAllVisibleVideos() {
+        let ids = Set(visibleVideos.map(\.id))
+        selectedVideoIDs = ids
+        primarySelectedVideoID = visibleVideos.first?.id
+    }
+
+    private func delete(_ video: CryptaVideo) async {
         do {
             if quickLookPreviewController.isPreviewing(video) {
                 quickLookPreviewController.close()
@@ -288,11 +386,34 @@ final class CryptaLibrary {
     }
 
     private func selectFirstVideoIfNeeded() {
-        if let selectedVideoID,
-           visibleVideos.contains(where: { $0.id == selectedVideoID }) {
+        let visibleIDs = Set(visibleVideos.map(\.id))
+        selectedVideoIDs = selectedVideoIDs.intersection(visibleIDs)
+        if let primarySelectedVideoID,
+           selectedVideoIDs.contains(primarySelectedVideoID) {
             return
         }
-        selectedVideoID = visibleVideos.first?.id
+        if let firstSelected = visibleVideos.first(where: { selectedVideoIDs.contains($0.id) }) {
+            primarySelectedVideoID = firstSelected.id
+        } else if let firstVisible = visibleVideos.first {
+            selectedVideoIDs = [firstVisible.id]
+            primarySelectedVideoID = firstVisible.id
+        } else {
+            selectedVideoIDs.removeAll()
+            primarySelectedVideoID = nil
+        }
+    }
+
+    private func normalizePrimarySelection() {
+        guard encryptedSectionUnlocked else {
+            primarySelectedVideoID = nil
+            return
+        }
+        if let primarySelectedVideoID,
+           selectedVideoIDs.contains(primarySelectedVideoID),
+           visibleVideos.contains(where: { $0.id == primarySelectedVideoID }) {
+            return
+        }
+        primarySelectedVideoID = visibleVideos.first { selectedVideoIDs.contains($0.id) }?.id
     }
 
     private func showToast(_ message: String, kind: CryptaToast.Kind = .success) {

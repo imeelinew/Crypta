@@ -9,6 +9,11 @@ struct DataSafetyTests {
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
         try await testPlaybackCacheCleanupRemovesCrashLeftovers()
+        try await testExportDecryptRemovesVideoFromVaultAfterIndexSave()
+        try await testExportDecryptUsesUniqueDestinationName()
+        try await testFailedExportKeepsEncryptedBlobAndIndexEntry()
+        try await testFailedIndexSaveAfterExportKeepsEncryptedBlobAndIndexEntry()
+        try await testExportRejectsVaultInternalDestination()
         print("Data safety tests passed")
     }
 
@@ -113,6 +118,112 @@ struct DataSafetyTests {
         try expect(isEmpty, "Playback cache cleanup left plaintext files behind.")
     }
 
+    private static func testExportDecryptRemovesVideoFromVaultAfterIndexSave() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = Data("synthetic-video".utf8)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "ExportMe.mp4", data: plaintext, store: store)
+        try store.saveThumbnailData(Data("synthetic-thumbnail".utf8), for: video)
+        let blob = harness.locations.moviesVault.appendingPathComponent(video.encryptedFileName ?? "")
+        let outputDirectory = harness.root.appendingPathComponent("Exports", isDirectory: true)
+
+        let output = try store.exportAndRemoveDecryptedVideo(video, to: outputDirectory)
+
+        try expect(try Data(contentsOf: output) == plaintext, "Exported plaintext bytes were not restored.")
+        try expect(!FileManager.default.fileExists(atPath: blob.path), "Encrypted blob remained after successful export.")
+        try expect(try store.loadThumbnailData(for: video) == nil, "Thumbnail remained after successful export.")
+        try expect(!store.loadIndex().videos.contains(where: { $0.id == video.id }), "Index entry remained after successful export.")
+        try expect(
+            !FileManager.default.fileExists(atPath: harness.locations.moviesVault.appendingPathComponent(output.lastPathComponent).path),
+            "Plain export was written inside the vault Objects directory."
+        )
+    }
+
+    private static func testExportDecryptUsesUniqueDestinationName() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "Video.mp4", data: Data("synthetic".utf8), store: store)
+        let outputDirectory = harness.root.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        try Data("existing".utf8).write(to: outputDirectory.appendingPathComponent("Video.mp4"))
+
+        let output = try store.exportAndRemoveDecryptedVideo(video, to: outputDirectory)
+
+        try expect(output.lastPathComponent == "Video 2.mp4", "Export overwrote or failed to uniquify an existing file.")
+    }
+
+    private static func testFailedExportKeepsEncryptedBlobAndIndexEntry() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = harness.sampleVideo(encryptedFileName: "invalid-blob")
+        try store.saveIndex(CryptaIndex(videos: [video]))
+        let blob = harness.locations.moviesVault.appendingPathComponent("invalid-blob")
+        try FileManager.default.createDirectory(at: harness.locations.moviesVault, withIntermediateDirectories: true)
+        try Data("not-a-valid-encrypted-file".utf8).write(to: blob)
+        let outputDirectory = harness.root.appendingPathComponent("Exports", isDirectory: true)
+
+        do {
+            _ = try store.exportAndRemoveDecryptedVideo(video, to: outputDirectory)
+            throw TestFailure("Invalid encrypted blob should not export successfully.")
+        } catch {
+            let outputFiles = (try? FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)) ?? []
+            try expect(outputFiles.isEmpty, "Failed export left a partial plaintext output.")
+            try expect(FileManager.default.fileExists(atPath: blob.path), "Failed export removed the encrypted blob.")
+            try expect(store.loadIndex().videos.contains(where: { $0.id == video.id }), "Failed export removed the index entry.")
+        }
+    }
+
+    private static func testFailedIndexSaveAfterExportKeepsEncryptedBlobAndIndexEntry() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = Data("synthetic-video".utf8)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "SaveFails.mp4", data: plaintext, store: store)
+        _ = try store.updatePlaybackPosition(videoID: video.id, seconds: 1)
+        let blob = harness.locations.moviesVault.appendingPathComponent(video.encryptedFileName ?? "")
+        let outputDirectory = harness.root.appendingPathComponent("Exports", isDirectory: true)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: harness.locations.vaultPackage.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: harness.locations.vaultPackage.path)
+        }
+
+        do {
+            _ = try store.exportAndRemoveDecryptedVideo(video, to: outputDirectory)
+            throw TestFailure("Export should fail when the index cannot be saved.")
+        } catch {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: harness.locations.vaultPackage.path)
+            try expect(FileManager.default.fileExists(atPath: blob.path), "Index-save failure removed the encrypted blob.")
+            try expect(store.loadIndex().videos.contains(where: { $0.id == video.id }), "Index-save failure removed the index entry.")
+            let outputFiles = (try? FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)) ?? []
+            try expect(outputFiles.count == 1, "Index-save failure should leave the already exported plaintext for the user.")
+        }
+    }
+
+    private static func testExportRejectsVaultInternalDestination() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "NoVaultOutput.mp4", data: Data("synthetic".utf8), store: store)
+        let blob = harness.locations.moviesVault.appendingPathComponent(video.encryptedFileName ?? "")
+
+        do {
+            _ = try store.exportAndRemoveDecryptedVideo(video, to: harness.locations.moviesVault)
+            throw TestFailure("Exporting into the vault should be rejected.")
+        } catch CryptaError.invalidExportDestination {
+            try expect(FileManager.default.fileExists(atPath: blob.path), "Rejected vault export removed the encrypted blob.")
+            try expect(store.loadIndex().videos.contains(where: { $0.id == video.id }), "Rejected vault export removed the index entry.")
+        }
+    }
+
     private static func expect(_ condition: Bool, _ message: String) throws {
         guard condition else {
             throw TestFailure(message)
@@ -166,6 +277,12 @@ private final class StoreHarness {
             byteCount: 12,
             durationSeconds: nil
         )
+    }
+
+    func importEncryptedVideo(named name: String, data: Data, store: CryptaStore) async throws -> CryptaVideo {
+        let source = root.appendingPathComponent(name, isDirectory: false)
+        try data.write(to: source)
+        return try await store.importVideo(from: source, storageState: .encrypted)
     }
 }
 

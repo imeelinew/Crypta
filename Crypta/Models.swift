@@ -30,6 +30,15 @@ nonisolated struct RenameRequest: Identifiable {
     }
 }
 
+nonisolated struct DeleteRequest: Identifiable {
+    let id = UUID()
+    let videos: [CryptaVideo]
+
+    var primaryVideo: CryptaVideo? {
+        videos.first
+    }
+}
+
 nonisolated struct CryptaToast: Equatable, Identifiable {
     enum Kind: Equatable {
         case success
@@ -159,6 +168,7 @@ nonisolated enum CryptaError: LocalizedError {
     case missingEncryptionKey
     case protectedDataRequiresExistingKey
     case indexRecoveryFailed
+    case invalidExportDestination
     case keychainReadFailed(OSStatus)
     case keychainWriteFailed(OSStatus)
 
@@ -182,6 +192,8 @@ nonisolated enum CryptaError: LocalizedError {
             return "检测到已有加密数据，拒绝创建新密钥"
         case .indexRecoveryFailed:
             return "视频索引损坏，且备份索引无法恢复"
+        case .invalidExportDestination:
+            return "不能解密到 Crypta Vault 内部"
         case .keychainReadFailed(let status):
             return "无法读取钥匙串密钥（\(status)）"
         case .keychainWriteFailed(let status):
