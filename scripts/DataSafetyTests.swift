@@ -3,6 +3,7 @@ import Foundation
 @main
 struct DataSafetyTests {
     static func main() async throws {
+        try testVideoSortModes()
         try await testMissingKeyDoesNotCreateReplacementWhenIndexExists()
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
@@ -15,6 +16,25 @@ struct DataSafetyTests {
         try await testFailedIndexSaveAfterExportKeepsEncryptedBlobAndIndexEntry()
         try await testExportRejectsVaultInternalDestination()
         print("Data safety tests passed")
+    }
+
+    private static func testVideoSortModes() throws {
+        let older = Date(timeIntervalSince1970: 1_700_000_000)
+        let newer = Date(timeIntervalSince1970: 1_800_000_000)
+        let videos = [
+            sampleVideo(displayName: "Video 10", importedAt: older),
+            sampleVideo(displayName: "Video 2", importedAt: older),
+            sampleVideo(displayName: "Alpha", importedAt: newer)
+        ]
+
+        try expect(
+            VideoSortMode.name.sorted(videos).map(\.displayName) == ["Alpha", "Video 2", "Video 10"],
+            "Name sort should use localized standard ordering."
+        )
+        try expect(
+            VideoSortMode.recentlyAdded.sorted(videos).map(\.displayName) == ["Alpha", "Video 2", "Video 10"],
+            "Recently-added sort should use imported date with name fallback."
+        )
     }
 
     private static func testMissingKeyDoesNotCreateReplacementWhenIndexExists() async throws {
@@ -228,6 +248,20 @@ struct DataSafetyTests {
         guard condition else {
             throw TestFailure(message)
         }
+    }
+
+    private static func sampleVideo(displayName: String, importedAt: Date) -> CryptaVideo {
+        CryptaVideo(
+            id: UUID(),
+            displayName: displayName,
+            originalExtension: "mp4",
+            storageState: .encrypted,
+            plainFileName: nil,
+            encryptedFileName: UUID().uuidString,
+            importedAt: importedAt,
+            byteCount: 12,
+            durationSeconds: nil
+        )
     }
 }
 

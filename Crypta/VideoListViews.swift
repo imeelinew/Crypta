@@ -42,44 +42,53 @@ struct VideoListPage: View {
                 ) {
                     Task { await library.unlockEncryptedSection() }
                 }
-            } else if library.visibleVideos.isEmpty {
-                ContentUnavailableView {
-                    Label(emptyTitle, systemImage: library.selectedSection.systemImage)
-                } description: {
-                    Text(emptyDescription)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.clear)
             } else {
-                List(selection: $library.selectedVideoIDs) {
-                    ForEach(library.visibleVideos) { video in
-                        VideoRow(video: video)
-                            .tag(video.id)
-                            .listRowBackground(Color.clear)
-                            .contextMenu {
-                                Button("重命名") {
-                                    library.requestRename(video)
-                                }
-                            }
-                    }
-                }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
-                .background {
-                    Color.clear
-                    VideoListInteractionInstaller(
-                        videos: library.visibleVideos,
-                        onDoubleClick: { video in
-                            library.selectOnly(video)
-                            Task { await library.play(video) }
-                        },
-                        onSpacePreview: {
-                            Task { await library.previewSelectedVideo() }
-                        },
-                        onSelectAll: {
-                            library.selectAllVisibleVideos()
-                        }
+                VStack(spacing: 0) {
+                    VideoListHeader(
+                        sortMode: $library.sortMode,
+                        summary: library.visibleVideoSummary
                     )
+
+                    if library.visibleVideos.isEmpty {
+                        ContentUnavailableView {
+                            Label(emptyTitle, systemImage: library.selectedSection.systemImage)
+                        } description: {
+                            Text(emptyDescription)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.clear)
+                    } else {
+                        List(selection: $library.selectedVideoIDs) {
+                            ForEach(library.visibleVideos) { video in
+                                VideoRow(video: video)
+                                    .tag(video.id)
+                                    .listRowBackground(Color.clear)
+                                    .contextMenu {
+                                        Button("重命名") {
+                                            library.requestRename(video)
+                                        }
+                                    }
+                            }
+                        }
+                        .listStyle(.inset)
+                        .scrollContentBackground(.hidden)
+                        .background {
+                            Color.clear
+                            VideoListInteractionInstaller(
+                                videos: library.visibleVideos,
+                                onDoubleClick: { video in
+                                    library.selectOnly(video)
+                                    Task { await library.play(video) }
+                                },
+                                onSpacePreview: {
+                                    Task { await library.previewSelectedVideo() }
+                                },
+                                onSelectAll: {
+                                    library.selectAllVisibleVideos()
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -93,6 +102,77 @@ struct VideoListPage: View {
 
     private var emptyDescription: String {
         "拖拽以导入加密视频"
+    }
+}
+
+private struct VideoListHeader: View {
+    @Binding var sortMode: VideoSortMode
+    let summary: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VideoSortPopup(sortMode: $sortMode)
+                .frame(width: 118, height: 24)
+
+            Text(summary)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+    }
+}
+
+private struct VideoSortPopup: NSViewRepresentable {
+    @Binding var sortMode: VideoSortMode
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(sortMode: $sortMode)
+    }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        button.bezelStyle = .rounded
+        button.controlSize = .regular
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.changeSortMode(_:))
+        if let cell = button.cell as? NSPopUpButtonCell {
+            cell.alignment = .left
+        }
+        for mode in VideoSortMode.allCases {
+            button.addItem(withTitle: mode.title)
+            button.lastItem?.representedObject = mode.rawValue
+        }
+        button.selectItem(withTitle: sortMode.title)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.sortMode = $sortMode
+        if button.selectedItem?.representedObject as? String != sortMode.rawValue {
+            button.selectItem(withTitle: sortMode.title)
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var sortMode: Binding<VideoSortMode>
+
+        init(sortMode: Binding<VideoSortMode>) {
+            self.sortMode = sortMode
+        }
+
+        @objc func changeSortMode(_ sender: NSPopUpButton) {
+            guard let rawValue = sender.selectedItem?.representedObject as? String,
+                  let nextMode = VideoSortMode(rawValue: rawValue) else {
+                return
+            }
+            sortMode.wrappedValue = nextMode
+        }
     }
 }
 

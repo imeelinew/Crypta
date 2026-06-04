@@ -16,6 +16,9 @@ final class CryptaLibrary {
     var deleteRequest: DeleteRequest?
     var toast: CryptaToast?
     var searchText = ""
+    var sortMode = VideoSortMode.stored {
+        didSet { sortMode.save() }
+    }
     private(set) var videos: [CryptaVideo] = []
     private(set) var isImporting = false
     private(set) var isWorking = false
@@ -32,10 +35,17 @@ final class CryptaLibrary {
         guard encryptedSectionUnlocked else { return [] }
         let sectionVideos = videos.filter { $0.storageState == selectedSection.storageState }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return sectionVideos }
-        return sectionVideos.filter { video in
+        let filteredVideos = query.isEmpty ? sectionVideos : sectionVideos.filter { video in
             video.displayName.localizedStandardContains(query)
         }
+        return sortMode.sorted(filteredVideos)
+    }
+
+    var visibleVideoSummary: String {
+        let videos = visibleVideos
+        let totalBytes = videos.reduce(Int64(0)) { $0 + $1.byteCount }
+        let size = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return "\(videos.count) 个视频 · \(size)"
     }
 
     var selectedVideo: CryptaVideo? {

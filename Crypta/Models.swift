@@ -39,6 +39,58 @@ nonisolated struct DeleteRequest: Identifiable {
     }
 }
 
+nonisolated enum VideoSortMode: String, CaseIterable, Identifiable, Sendable {
+    case recentlyAdded
+    case name
+
+    static let storageKey = "videoListSortMode"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recentlyAdded: return "按最近添加"
+        case .name: return "按名称"
+        }
+    }
+
+    static var stored: VideoSortMode {
+        VideoSortMode(rawValue: UserDefaults.standard.string(forKey: storageKey) ?? "") ?? .recentlyAdded
+    }
+
+    func save() {
+        UserDefaults.standard.set(rawValue, forKey: Self.storageKey)
+    }
+
+    func sorted(_ videos: [CryptaVideo]) -> [CryptaVideo] {
+        switch self {
+        case .recentlyAdded:
+            return videos.sorted { lhs, rhs in
+                if lhs.importedAt != rhs.importedAt {
+                    return lhs.importedAt > rhs.importedAt
+                }
+                return Self.isOrderedByName(lhs, before: rhs)
+            }
+        case .name:
+            return videos.sorted { lhs, rhs in
+                Self.isOrderedByName(lhs, before: rhs)
+            }
+        }
+    }
+
+    private static func isOrderedByName(_ lhs: CryptaVideo, before rhs: CryptaVideo) -> Bool {
+        let nameComparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+        if nameComparison != .orderedSame {
+            return nameComparison == .orderedAscending
+        }
+        let extensionComparison = lhs.originalExtension.localizedStandardCompare(rhs.originalExtension)
+        if extensionComparison != .orderedSame {
+            return extensionComparison == .orderedAscending
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
 nonisolated struct CryptaToast: Equatable, Identifiable {
     enum Kind: Equatable {
         case success
