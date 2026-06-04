@@ -12,17 +12,19 @@ import Testing
 struct CryptaTests {
 
     @Test func vaultLivesInMoviesFolder() async throws {
-        let expectedVault = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Crypta", isDirectory: true)
+        let expectedPackage = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Crypta.vault", isDirectory: true)
+        let expectedObjects = expectedPackage.appendingPathComponent("Objects", isDirectory: true)
 
-        #expect(CryptaPaths.moviesVault == expectedVault)
-        #expect(CryptaPaths.thumbnailCache == CryptaPaths.moviesVault.appendingPathComponent("Thumbnails", isDirectory: true))
-        #expect(CryptaPaths.moviesVault.path.hasSuffix("/Movies/Crypta"))
+        #expect(CryptaPaths.vaultPackage == expectedPackage)
+        #expect(CryptaPaths.moviesVault == expectedObjects)
+        #expect(CryptaPaths.thumbnailCache == expectedPackage.appendingPathComponent("Thumbnails", isDirectory: true))
+        #expect(CryptaPaths.vaultPackage.path.hasSuffix("/Movies/Crypta.vault"))
     }
 
     @Test func encryptedIndexUsesNewAppIdentity() async throws {
-        #expect(CryptaPaths.applicationSupport.path.hasSuffix("/Application Support/com.eli.Crypta"))
-        #expect(CryptaPaths.encryptedIndex == CryptaPaths.applicationSupport.appendingPathComponent("library.index", isDirectory: false))
+        #expect(CryptaPaths.applicationSupport == CryptaPaths.vaultPackage)
+        #expect(CryptaPaths.encryptedIndex == CryptaPaths.vaultPackage.appendingPathComponent("library.index", isDirectory: false))
         #expect(!CryptaPaths.encryptedIndex.path.hasSuffix("/Application Support/Crypta/library.index"))
     }
 

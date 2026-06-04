@@ -5,44 +5,40 @@ import Security
 import UniformTypeIdentifiers
 
 nonisolated struct CryptaStorageLocations: Sendable {
+    let vaultPackage: URL
     let moviesVault: URL
     let applicationSupport: URL
     let playbackCache: URL
 
     var encryptedIndex: URL {
-        applicationSupport.appendingPathComponent("library.index", isDirectory: false)
+        vaultPackage.appendingPathComponent("library.index", isDirectory: false)
     }
 
     var encryptedIndexBackup: URL {
-        applicationSupport.appendingPathComponent("library.index.backup", isDirectory: false)
+        vaultPackage.appendingPathComponent("library.index.backup", isDirectory: false)
     }
 
     var thumbnailCache: URL {
-        moviesVault.appendingPathComponent("Thumbnails", isDirectory: true)
-    }
-
-    var legacyThumbnailCache: URL {
-        applicationSupport.appendingPathComponent("Thumbnails", isDirectory: true)
+        vaultPackage.appendingPathComponent("Thumbnails", isDirectory: true)
     }
 
     static var live: CryptaStorageLocations {
-        let appName = "Crypta"
+        let moviesDirectory = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
+        let vaultPackage = moviesDirectory.appendingPathComponent("Crypta.vault", isDirectory: true)
         return CryptaStorageLocations(
-            moviesVault: FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent(appName, isDirectory: true),
-            applicationSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("com.eli.Crypta", isDirectory: true),
+            vaultPackage: vaultPackage,
+            moviesVault: vaultPackage.appendingPathComponent("Objects", isDirectory: true),
+            applicationSupport: vaultPackage,
             playbackCache: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent(appName, isDirectory: true)
+                .appendingPathComponent("Crypta", isDirectory: true)
                 .appendingPathComponent("Playback", isDirectory: true)
         )
     }
 
     func prepareDirectories() throws {
+        try FileManager.default.createDirectory(at: vaultPackage, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: moviesVault, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: thumbnailCache, withIntermediateDirectories: true)
-        try migrateLegacyThumbnailCacheIfNeeded()
         try FileManager.default.createDirectory(at: playbackCache, withIntermediateDirectories: true)
     }
 
@@ -53,33 +49,14 @@ nonisolated struct CryptaStorageLocations: Sendable {
             try? fileManager.removeItem(at: url)
         }
     }
-
-    private func migrateLegacyThumbnailCacheIfNeeded() throws {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: legacyThumbnailCache.path) else { return }
-
-        for url in try fileManager.contentsOfDirectory(at: legacyThumbnailCache, includingPropertiesForKeys: nil) {
-            guard url.pathExtension == "thumb" else { continue }
-            let destination = thumbnailCache.appendingPathComponent(url.lastPathComponent, isDirectory: false)
-            if fileManager.fileExists(atPath: destination.path) {
-                try? fileManager.removeItem(at: url)
-            } else {
-                try? fileManager.moveItem(at: url, to: destination)
-            }
-        }
-
-        if (try? fileManager.contentsOfDirectory(atPath: legacyThumbnailCache.path).isEmpty) == true {
-            try? fileManager.removeItem(at: legacyThumbnailCache)
-        }
-    }
 }
 
 nonisolated enum CryptaPaths {
+    static var vaultPackage: URL { CryptaStorageLocations.live.vaultPackage }
     static var moviesVault: URL { CryptaStorageLocations.live.moviesVault }
     static var applicationSupport: URL { CryptaStorageLocations.live.applicationSupport }
     static var encryptedIndex: URL { CryptaStorageLocations.live.encryptedIndex }
     static var thumbnailCache: URL { CryptaStorageLocations.live.thumbnailCache }
-    static var legacyThumbnailCache: URL { CryptaStorageLocations.live.legacyThumbnailCache }
     static var playbackCache: URL { CryptaStorageLocations.live.playbackCache }
 
     static func prepareDirectories() throws {
@@ -283,9 +260,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
 
     func deleteThumbnail(for video: CryptaVideo) {
         try? FileManager.default.removeItem(at: thumbnailURL(for: video, in: locations.thumbnailCache))
-        try? FileManager.default.removeItem(at: legacyThumbnailURL(for: video, in: locations.thumbnailCache))
-        try? FileManager.default.removeItem(at: thumbnailURL(for: video, in: locations.legacyThumbnailCache))
-        try? FileManager.default.removeItem(at: legacyThumbnailURL(for: video, in: locations.legacyThumbnailCache))
     }
 
     func rename(_ video: CryptaVideo, to newName: String) throws -> CryptaVideo {
@@ -392,10 +366,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
 
     private func thumbnailURL(for video: CryptaVideo, in directory: URL) -> URL {
         directory.appendingPathComponent("\(video.id.uuidString).v2.thumb", isDirectory: false)
-    }
-
-    private func legacyThumbnailURL(for video: CryptaVideo, in directory: URL) -> URL {
-        directory.appendingPathComponent("\(video.id.uuidString).thumb", isDirectory: false)
     }
 
     private func encryptedVersion(of video: CryptaVideo, plainURL: URL) throws -> CryptaVideo {

@@ -137,8 +137,9 @@ private final class StoreHarness {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("CryptaDataSafety-\(UUID().uuidString)", isDirectory: true)
         locations = CryptaStorageLocations(
-            moviesVault: root.appendingPathComponent("Movies/Crypta", isDirectory: true),
-            applicationSupport: root.appendingPathComponent("Application Support/com.eli.Crypta", isDirectory: true),
+            vaultPackage: root.appendingPathComponent("Movies/Crypta.vault", isDirectory: true),
+            moviesVault: root.appendingPathComponent("Movies/Crypta.vault/Objects", isDirectory: true),
+            applicationSupport: root.appendingPathComponent("Movies/Crypta.vault", isDirectory: true),
             playbackCache: root.appendingPathComponent("Caches/Crypta/Playback", isDirectory: true)
         )
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -30,9 +30,22 @@
 		451AD44D2FD1532400F8A862 /* Crypta.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; name = Crypta.icon; path = Crypta/Crypta.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		451AD44E2FD1532400F8A862 /* Exceptions for "Crypta" folder in "Crypta" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 451AD4212FD1532300F8A862 /* Crypta */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		451AD4242FD1532300F8A862 /* Crypta */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				451AD44E2FD1532400F8A862 /* Exceptions for "Crypta" folder in "Crypta" target */,
+			);
 			path = Crypta;
 			sourceTree = "<group>";
 		};
@@ -403,9 +416,8 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleIconName = Crypta;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Crypta/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -435,9 +447,8 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleIconName = Crypta;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Crypta/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
