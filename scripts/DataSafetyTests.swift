@@ -4,9 +4,11 @@ import Foundation
 struct DataSafetyTests {
     static func main() async throws {
         try testVideoSortModes()
+        try testLegacyVideosDefaultToSafeLibraryKind()
         try await testMissingKeyDoesNotCreateReplacementWhenIndexExists()
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
+        try await testVideoLibraryImportsStayEncrypted()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
         try await testPlaybackCacheCleanupRemovesCrashLeftovers()
@@ -34,6 +36,48 @@ struct DataSafetyTests {
         try expect(
             VideoSortMode.recentlyAdded.sorted(videos).map(\.displayName) == ["Alpha", "Video 2", "Video 10"],
             "Recently-added sort should use imported date with name fallback."
+        )
+    }
+
+    private static func testLegacyVideosDefaultToSafeLibraryKind() throws {
+        let encryptedJSON = Data("""
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "displayName": "Legacy Secret",
+          "originalExtension": "mp4",
+          "storageState": "encrypted",
+          "plainFileName": null,
+          "encryptedFileName": "blob",
+          "importedAt": 0,
+          "byteCount": 12,
+          "durationSeconds": null
+        }
+        """.utf8)
+        let plainJSON = Data("""
+        {
+          "id": "00000000-0000-0000-0000-000000000002",
+          "displayName": "Legacy Plain",
+          "originalExtension": "mp4",
+          "storageState": "plain",
+          "plainFileName": "Legacy Plain.mp4",
+          "encryptedFileName": null,
+          "importedAt": 0,
+          "byteCount": 12,
+          "durationSeconds": null
+        }
+        """.utf8)
+        let decoder = JSONDecoder()
+
+        let encryptedVideo = try decoder.decode(CryptaVideo.self, from: encryptedJSON)
+        let plainVideo = try decoder.decode(CryptaVideo.self, from: plainJSON)
+
+        try expect(
+            encryptedVideo.libraryKind == .encrypted,
+            "Legacy encrypted videos should default to the encrypted section."
+        )
+        try expect(
+            plainVideo.libraryKind == .encrypted,
+            "Legacy plain videos without an explicit category should stay out of the video section."
         )
     }
 
@@ -87,6 +131,42 @@ struct DataSafetyTests {
 
         let recovered = try store.loadIndex()
         try expect(recovered.videos.map(\.displayName) == ["First"], "Corrupted index did not recover from backup.")
+    }
+
+    private static func testVideoLibraryImportsStayEncrypted() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = Data("casual-but-private-video".utf8)
+        let source = harness.root.appendingPathComponent("Casual.mkv", isDirectory: false)
+        try plaintext.write(to: source)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+
+        let video = try await store.importVideo(from: source, libraryKind: .video)
+
+        try expect(video.libraryKind == .video, "Video-section import did not keep its semantic category.")
+        try expect(video.storageState == .encrypted, "Video-section import should still be encrypted by default.")
+        try expect(video.plainFileName == nil, "Video-section import created a long-lived plain file.")
+        guard let encryptedFileName = video.encryptedFileName else {
+            throw TestFailure("Video-section import did not create an encrypted blob.")
+        }
+
+        let blob = harness.locations.moviesVault.appendingPathComponent(encryptedFileName)
+        try expect(FileManager.default.fileExists(atPath: blob.path), "Encrypted blob was not written.")
+        try expect(try Data(contentsOf: blob) != plaintext, "Encrypted blob contains plaintext bytes.")
+
+        let playback = try store.preparePlaybackURL(for: video)
+        defer {
+            if let cleanupURL = playback.cleanupURL {
+                try? FileManager.default.removeItem(at: cleanupURL)
+            }
+        }
+        try expect(try Data(contentsOf: playback.url) == plaintext, "Temporary playback file did not restore plaintext.")
+        try expect(playback.cleanupURL != nil, "Encrypted video playback did not use a cleanup directory.")
+        try expect(
+            !playback.url.path.hasPrefix(harness.locations.vaultPackage.path + "/"),
+            "Temporary playback file was written inside the vault package."
+        )
     }
 
     private static func testFailedImportKeepsSourceFileUntilIndexIsSaved() async throws {

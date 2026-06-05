@@ -2,20 +2,34 @@ import Foundation
 import Security
 
 nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable {
+    case video
     case encrypted
 
     var id: String { rawValue }
 
     var title: String {
-        "加密视频"
+        switch self {
+        case .video: return "视频"
+        case .encrypted: return "加密视频"
+        }
     }
 
     var systemImage: String {
-        "lock.fill"
+        switch self {
+        case .video: return "video.fill"
+        case .encrypted: return "lock.fill"
+        }
     }
 
-    var storageState: CryptaVideo.StorageState {
-        .encrypted
+    var libraryKind: CryptaVideo.LibraryKind {
+        switch self {
+        case .video: return .video
+        case .encrypted: return .encrypted
+        }
+    }
+
+    var requiresAuthentication: Bool {
+        self == .encrypted
     }
 }
 
@@ -115,9 +129,15 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         case encrypted
     }
 
+    enum LibraryKind: String, Codable, Sendable {
+        case video
+        case encrypted
+    }
+
     let id: UUID
     var displayName: String
     let originalExtension: String
+    var libraryKind: LibraryKind
     var storageState: StorageState
     var plainFileName: String?
     var encryptedFileName: String?
@@ -136,6 +156,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         id: UUID,
         displayName: String,
         originalExtension: String,
+        libraryKind: LibraryKind = .encrypted,
         storageState: StorageState,
         plainFileName: String?,
         encryptedFileName: String?,
@@ -147,6 +168,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         self.id = id
         self.displayName = displayName
         self.originalExtension = originalExtension
+        self.libraryKind = libraryKind
         self.storageState = storageState
         self.plainFileName = plainFileName
         self.encryptedFileName = encryptedFileName
@@ -166,6 +188,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         durationSeconds = try container.decodeIfPresent(Double.self, forKey: .durationSeconds)
         playbackPositionSeconds = try container.decodeIfPresent(Double.self, forKey: .playbackPositionSeconds)
         storageState = try container.decodeIfPresent(StorageState.self, forKey: .storageState) ?? .encrypted
+        libraryKind = try container.decodeIfPresent(LibraryKind.self, forKey: .libraryKind) ?? .encrypted
         plainFileName = try container.decodeIfPresent(String.self, forKey: .plainFileName)
         encryptedFileName = try container.decodeIfPresent(String.self, forKey: .encryptedFileName)
     }
@@ -174,6 +197,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         case id
         case displayName
         case originalExtension
+        case libraryKind
         case storageState
         case plainFileName
         case encryptedFileName
@@ -221,6 +245,8 @@ nonisolated enum CryptaError: LocalizedError {
     case protectedDataRequiresExistingKey
     case indexRecoveryFailed
     case invalidExportDestination
+    case externalPlayerUnavailable
+    case externalPlayerOpenFailed
     case keychainReadFailed(OSStatus)
     case keychainWriteFailed(OSStatus)
 
@@ -246,6 +272,10 @@ nonisolated enum CryptaError: LocalizedError {
             return "视频索引损坏，且备份索引无法恢复"
         case .invalidExportDestination:
             return "不能解密到 Crypta Vault 内部"
+        case .externalPlayerUnavailable:
+            return "找不到 IINA"
+        case .externalPlayerOpenFailed:
+            return "无法使用 IINA 播放"
         case .keychainReadFailed(let status):
             return "无法读取钥匙串密钥（\(status)）"
         case .keychainWriteFailed(let status):

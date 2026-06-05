@@ -30,10 +30,26 @@ final class CryptaLibrary {
     private var playerWindowController: PlayerWindowController?
     private var quickLookPreviewController = QuickLookPreviewController()
     private var playbackPositionSaveTasks: [CryptaVideo.ID: Task<Void, Never>] = [:]
+    private var externalPlaybackCleanupURLs: Set<URL> = []
+    private var externalPlayerTerminationObserver: NSObjectProtocol?
+
+    init() {
+        externalPlayerTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let bundleIdentifier = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .bundleIdentifier
+            Task { @MainActor [weak self] in
+                self?.handleExternalApplicationTermination(bundleIdentifier: bundleIdentifier)
+            }
+        }
+    }
 
     var visibleVideos: [CryptaVideo] {
-        guard encryptedSectionUnlocked else { return [] }
-        let sectionVideos = videos.filter { $0.storageState == selectedSection.storageState }
+        guard canAccessSelectedSection else { return [] }
+        let sectionVideos = videos.filter { $0.libraryKind == selectedSection.libraryKind }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filteredVideos = query.isEmpty ? sectionVideos : sectionVideos.filter { video in
             video.displayName.localizedStandardContains(query)
@@ -48,8 +64,12 @@ final class CryptaLibrary {
         return "\(videos.count) 个视频 · \(size)"
     }
 
+    var canAccessSelectedSection: Bool {
+        !selectedSection.requiresAuthentication || encryptedSectionUnlocked
+    }
+
     var selectedVideo: CryptaVideo? {
-        guard encryptedSectionUnlocked else { return nil }
+        guard canAccessSelectedSection else { return nil }
         if let primarySelectedVideoID,
            let primary = visibleVideos.first(where: { $0.id == primarySelectedVideoID && selectedVideoIDs.contains($0.id) }) {
             return primary
@@ -58,7 +78,7 @@ final class CryptaLibrary {
     }
 
     var selectedVideos: [CryptaVideo] {
-        guard encryptedSectionUnlocked else { return [] }
+        guard canAccessSelectedSection else { return [] }
         return visibleVideos.filter { selectedVideoIDs.contains($0.id) }
     }
 
@@ -117,6 +137,7 @@ final class CryptaLibrary {
         deleteRequest = nil
         quickLookPreviewController.close()
         playerWindowController?.close()
+        cleanupExternalPlaybackFiles()
         VideoThumbnailLoader.clearMemoryCache()
     }
 
@@ -131,12 +152,12 @@ final class CryptaLibrary {
         defer { isImporting = false }
 
         var imported: [CryptaVideo] = []
-        let targetState = selectedSection.storageState
+        let targetKind = selectedSection.libraryKind
         for url in candidates {
             do {
                 let store = self.store
                 let video = try await Task.detached(priority: .userInitiated) {
-                    try await store.importVideo(from: url, storageState: targetState)
+                    try await store.importVideo(from: url, storageState: .encrypted, libraryKind: targetKind)
                 }.value
                 imported.append(video)
             } catch {
@@ -150,7 +171,7 @@ final class CryptaLibrary {
         videos = videos.sortedForDisplay()
         preloadThumbnails(for: imported)
         showToast("已导入 \(imported.count) 个视频")
-        if targetState == .encrypted {
+        if targetKind == .encrypted {
             playEncryptedVideoAddedSound()
         }
         if let firstImportedID = imported.first?.id {
@@ -160,13 +181,13 @@ final class CryptaLibrary {
     }
 
     func playSelectedVideo() async {
-        guard encryptedSectionUnlocked else { return }
+        guard canAccessSelectedSection else { return }
         guard let video = selectedVideo else { return }
         await play(video)
     }
 
     func previewSelectedVideo() async {
-        guard encryptedSectionUnlocked else { return }
+        guard canAccessSelectedSection else { return }
         guard let video = selectedVideo else { return }
         guard !isImporting, !isWorking else { return }
 
@@ -189,7 +210,12 @@ final class CryptaLibrary {
     }
 
     func play(_ video: CryptaVideo) async {
-        guard encryptedSectionUnlocked else { return }
+        guard canAccessSelectedSection else { return }
+        if video.libraryKind == .video {
+            await playInExternalPlayer(video)
+            return
+        }
+
         do {
             isWorking = true
             defer { isWorking = false }
@@ -223,7 +249,7 @@ final class CryptaLibrary {
     }
 
     func requestRename(_ video: CryptaVideo) {
-        guard encryptedSectionUnlocked else { return }
+        guard canAccessSelectedSection else { return }
         renameRequest = RenameRequest(video: video)
     }
 
@@ -298,7 +324,7 @@ final class CryptaLibrary {
     }
 
     func confirmDeleteSelectedVideo() {
-        guard encryptedSectionUnlocked else { return }
+        guard canAccessSelectedSection else { return }
         let selectedVideos = selectedVideos
         guard !selectedVideos.isEmpty else { return }
         deleteRequest = DeleteRequest(videos: selectedVideos)
@@ -414,7 +440,7 @@ final class CryptaLibrary {
     }
 
     private func normalizePrimarySelection() {
-        guard encryptedSectionUnlocked else {
+        guard canAccessSelectedSection else {
             primarySelectedVideoID = nil
             return
         }
@@ -430,6 +456,68 @@ final class CryptaLibrary {
         withAnimation(.spring(duration: 0.24, bounce: 0.18)) {
             toast = CryptaToast(message: message, kind: kind)
         }
+    }
+
+    private func playInExternalPlayer(_ video: CryptaVideo) async {
+        var pendingCleanupURL: URL?
+        do {
+            isWorking = true
+            defer { isWorking = false }
+
+            let store = self.store
+            let playback = try await Task.detached(priority: .userInitiated) {
+                try store.preparePlaybackURL(for: video)
+            }.value
+            if let cleanupURL = playback.cleanupURL {
+                pendingCleanupURL = cleanupURL
+                externalPlaybackCleanupURLs.insert(cleanupURL)
+            }
+            try await openInIINA(playback.url)
+            showToast("已交给 IINA 播放")
+        } catch {
+            if let pendingCleanupURL {
+                externalPlaybackCleanupURLs.remove(pendingCleanupURL)
+                try? FileManager.default.removeItem(at: pendingCleanupURL)
+            }
+            showToast("播放失败", kind: .error)
+            errorMessage = "播放失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func openInIINA(_ url: URL) async throws {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.iinaBundleIdentifier) else {
+            throw CryptaError.externalPlayerUnavailable
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: appURL,
+                configuration: configuration
+            ) { _, error in
+                if error != nil {
+                    continuation.resume(throwing: CryptaError.externalPlayerOpenFailed)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private func handleExternalApplicationTermination(bundleIdentifier: String?) {
+        guard bundleIdentifier == Self.iinaBundleIdentifier else {
+            return
+        }
+        cleanupExternalPlaybackFiles()
+    }
+
+    private func cleanupExternalPlaybackFiles() {
+        for url in externalPlaybackCleanupURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        externalPlaybackCleanupURLs.removeAll()
     }
 
     private func preloadThumbnails(for videos: [CryptaVideo]) {
@@ -495,4 +583,5 @@ final class CryptaLibrary {
         }
     }
 
+    private static let iinaBundleIdentifier = "com.colliderli.iina"
 }

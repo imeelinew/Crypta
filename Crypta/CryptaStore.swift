@@ -173,7 +173,11 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         try fileManager.moveItem(at: temporaryBackup, to: locations.encryptedIndexBackup)
     }
 
-    func importVideo(from sourceURL: URL, storageState: CryptaVideo.StorageState) async throws -> CryptaVideo {
+    func importVideo(
+        from sourceURL: URL,
+        storageState: CryptaVideo.StorageState = .encrypted,
+        libraryKind: CryptaVideo.LibraryKind = .encrypted
+    ) async throws -> CryptaVideo {
         try locations.prepareDirectories()
 
         let secureURL = sourceURL.startAccessingSecurityScopedResource()
@@ -210,6 +214,7 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             id: id,
             displayName: displayName,
             originalExtension: extensionName,
+            libraryKind: libraryKind,
             storageState: storageState,
             plainFileName: plainFileName,
             encryptedFileName: encryptedFileName,

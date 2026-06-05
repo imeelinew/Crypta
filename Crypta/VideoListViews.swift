@@ -36,7 +36,7 @@ struct VideoListPage: View {
 
     var body: some View {
         Group {
-            if !library.encryptedSectionUnlocked {
+            if !library.canAccessSelectedSection {
                 LockedEncryptedSectionView(
                     isAuthenticating: library.isAuthenticatingEncryptedSection
                 ) {
@@ -97,11 +97,17 @@ struct VideoListPage: View {
     }
 
     private var emptyTitle: String {
-        "无加密视频"
+        switch library.selectedSection {
+        case .video: return "无视频"
+        case .encrypted: return "无加密视频"
+        }
     }
 
     private var emptyDescription: String {
-        "拖拽以导入加密视频"
+        switch library.selectedSection {
+        case .video: return "拖拽以导入视频"
+        case .encrypted: return "拖拽以导入加密视频"
+        }
     }
 }
 
@@ -432,9 +438,9 @@ struct ThumbnailView: View {
                     .frame(width: 64, height: 38)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             } else {
-                Image(systemName: video.storageState == .plain ? "video.fill" : "lock.fill")
+                Image(systemName: video.libraryKind == .video ? "video.fill" : "lock.fill")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(video.storageState == .plain ? Color.secondary : Color.accentColor)
+                    .foregroundStyle(video.libraryKind == .video ? Color.secondary : Color.accentColor)
             }
         }
         .frame(width: 64, height: 38)
