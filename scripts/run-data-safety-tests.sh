@@ -11,6 +11,7 @@ mkdir -p "$BUILD_DIR"
 xcrun swiftc \
   "$ROOT_DIR/Crypta/Models.swift" \
   "$ROOT_DIR/Crypta/CryptaStore.swift" \
+  "$ROOT_DIR/Crypta/VideoThumbnailLoader.swift" \
   "$ROOT_DIR/scripts/DataSafetyTests.swift" \
   -o "$BIN"
 

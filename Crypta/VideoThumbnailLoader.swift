@@ -75,7 +75,15 @@ enum VideoThumbnailLoader {
         return image
     }
 
-    private static func image(from url: URL) async throws -> NSImage? {
+    static func image(from url: URL) async throws -> NSImage? {
+        do {
+            return try await avFoundationImage(from: url)
+        } catch {
+            return try ffmpegImage(from: url)
+        }
+    }
+
+    private static func avFoundationImage(from url: URL) async throws -> NSImage? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -98,6 +106,55 @@ enum VideoThumbnailLoader {
             }
         }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    private static func ffmpegImage(from url: URL) throws -> NSImage {
+        guard let ffmpegURL = ffmpegExecutableURL() else {
+            throw CryptaError.thumbnailFailed
+        }
+
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CryptaThumbnail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+
+        let outputURL = outputDirectory.appendingPathComponent("thumbnail.png", isDirectory: false)
+        let process = Process()
+        process.executableURL = ffmpegURL
+        process.arguments = [
+            "-v", "error",
+            "-y",
+            "-ss", "0",
+            "-i", url.path,
+            "-frames:v", "1",
+            "-an",
+            "-sn",
+            outputURL.path
+        ]
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: outputURL.path),
+              let image = NSImage(contentsOf: outputURL) else {
+            throw CryptaError.thumbnailFailed
+        }
+        return image
+    }
+
+    private static func ffmpegExecutableURL() -> URL? {
+        let fileManager = FileManager.default
+        let candidates = [
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg"
+        ]
+        return candidates
+            .map { URL(fileURLWithPath: $0) }
+            .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
     private static func thumbnailTime(for asset: AVURLAsset) async throws -> CMTime {

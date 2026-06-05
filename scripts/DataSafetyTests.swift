@@ -9,6 +9,7 @@ struct DataSafetyTests {
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
+        try await testMkvThumbnailFallsBackToFFmpeg()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
         try await testPlaybackCacheCleanupRemovesCrashLeftovers()
@@ -169,6 +170,35 @@ struct DataSafetyTests {
         )
     }
 
+    private static func testMkvThumbnailFallsBackToFFmpeg() async throws {
+        guard let ffmpegURL = ffmpegExecutableURL() else {
+            print("Skipping mkv thumbnail fallback test: ffmpeg not found")
+            return
+        }
+
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let source = harness.root.appendingPathComponent("Synthetic.mkv", isDirectory: false)
+        try runFFmpeg(
+            ffmpegURL,
+            arguments: [
+                "-v", "error",
+                "-f", "lavfi",
+                "-i", "testsrc=size=160x90:rate=1",
+                "-t", "1",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                source.path
+            ]
+        )
+
+        guard let image = try await VideoThumbnailLoader.image(from: source) else {
+            throw TestFailure("MKV thumbnail fallback did not produce an image.")
+        }
+        try expect(image.size.width > 0 && image.size.height > 0, "MKV thumbnail fallback produced an empty image.")
+    }
+
     private static func testFailedImportKeepsSourceFileUntilIndexIsSaved() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
@@ -327,6 +357,29 @@ struct DataSafetyTests {
     private static func expect(_ condition: Bool, _ message: String) throws {
         guard condition else {
             throw TestFailure(message)
+        }
+    }
+
+    private static func ffmpegExecutableURL() -> URL? {
+        let candidates = [
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg"
+        ]
+        return candidates
+            .map { URL(fileURLWithPath: $0) }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func runFFmpeg(_ ffmpegURL: URL, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = ffmpegURL
+        process.arguments = arguments
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw TestFailure("ffmpeg fixture generation failed.")
         }
     }
 
