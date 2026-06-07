@@ -23,13 +23,16 @@ enum VideoThumbnailLoader {
     }
 
     static func thumbnail(for video: CryptaVideo) async -> NSImage? {
-        await coordinator.thumbnail(for: video)
+        await thumbnail(for: video, store: CryptaStore())
     }
 
-    fileprivate static func loadOrGenerateThumbnail(for video: CryptaVideo) async -> NSImage? {
+    static func thumbnail(for video: CryptaVideo, store: CryptaStore) async -> NSImage? {
+        await coordinator.thumbnail(for: video, store: store)
+    }
+
+    fileprivate static func loadOrGenerateThumbnail(for video: CryptaVideo, store: CryptaStore) async -> NSImage? {
         do {
             try Task.checkCancellation()
-            let store = CryptaStore()
             if let data = try store.loadThumbnailData(for: video),
                let image = NSImage(data: data) {
                 return image
@@ -68,6 +71,12 @@ enum VideoThumbnailLoader {
             if let cleanupURL = playback.cleanupURL {
                 try? FileManager.default.removeItem(at: cleanupURL)
             }
+        }
+        if video.isImage {
+            guard let image = NSImage(contentsOf: playback.url) else {
+                throw CryptaError.thumbnailFailed
+            }
+            return image
         }
         guard let image = try await image(from: playback.url) else {
             throw CryptaError.thumbnailFailed
@@ -187,7 +196,7 @@ private final class VideoThumbnailCoordinator {
         cache.object(forKey: key(for: video))
     }
 
-    func thumbnail(for video: CryptaVideo) async -> NSImage? {
+    func thumbnail(for video: CryptaVideo, store: CryptaStore) async -> NSImage? {
         let cacheKey = key(for: video)
         if let image = cache.object(forKey: cacheKey) {
             return image
@@ -198,7 +207,7 @@ private final class VideoThumbnailCoordinator {
         }
 
         let task = Task.detached(priority: .utility) {
-            await VideoThumbnailLoader.loadOrGenerateThumbnail(for: video)
+            await VideoThumbnailLoader.loadOrGenerateThumbnail(for: video, store: store)
         }
         inFlightTasks[video.id] = task
 

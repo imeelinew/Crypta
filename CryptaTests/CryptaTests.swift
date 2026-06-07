@@ -11,6 +11,18 @@ import Testing
 
 struct CryptaTests {
 
+    @MainActor
+    @Test func libraryOpensOnVideoSection() {
+        let library = CryptaLibrary()
+
+        #expect(library.selectedSection == .video)
+    }
+
+    @Test func encryptedImageSectionRequiresAuthentication() {
+        #expect(LibrarySection.encryptedImage.requiresAuthentication)
+        #expect(LibrarySection.encryptedImage.libraryKind == .encryptedImage)
+    }
+
     @Test func vaultLivesInMoviesFolder() async throws {
         let expectedPackage = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Crypta.vault", isDirectory: true)

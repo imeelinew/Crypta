@@ -38,6 +38,7 @@ struct VideoListPage: View {
         Group {
             if !library.canAccessSelectedSection {
                 LockedEncryptedSectionView(
+                    section: library.selectedSection,
                     isAuthenticating: library.isAuthenticatingEncryptedSection
                 ) {
                     Task { await library.unlockEncryptedSection() }
@@ -93,13 +94,14 @@ struct VideoListPage: View {
             }
         }
         .navigationTitle(library.selectedSection.title)
-        .searchable(text: $library.searchText, placement: .toolbar, prompt: "搜索视频")
+        .searchable(text: $library.searchText, placement: .toolbar, prompt: "搜索\(library.selectedSection.itemNoun)")
     }
 
     private var emptyTitle: String {
         switch library.selectedSection {
         case .video: return "无视频"
         case .encrypted: return "无加密视频"
+        case .encryptedImage: return "无加密图片"
         }
     }
 
@@ -107,6 +109,7 @@ struct VideoListPage: View {
         switch library.selectedSection {
         case .video: return "拖拽以导入视频"
         case .encrypted: return "拖拽以导入加密视频"
+        case .encryptedImage: return "拖拽以导入加密图片"
         }
     }
 }
@@ -183,19 +186,20 @@ private struct VideoSortPopup: NSViewRepresentable {
 }
 
 private struct LockedEncryptedSectionView: View {
+    let section: LibrarySection
     let isAuthenticating: Bool
     let unlock: () -> Void
 
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: "lock.fill")
+            Image(systemName: section.systemImage)
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             Text("已加密")
                 .font(.title3.weight(.semibold))
 
-            Button(isAuthenticating ? "正在验证" : "解锁视频") {
+            Button(isAuthenticating ? "正在验证" : "解锁\(section.itemNoun)") {
                 unlock()
             }
             .disabled(isAuthenticating)
@@ -438,13 +442,20 @@ struct ThumbnailView: View {
                     .frame(width: 64, height: 38)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
             } else {
-                Image(systemName: video.libraryKind == .video ? "video.fill" : "lock.fill")
+                Image(systemName: placeholderSystemImage)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(video.libraryKind == .video ? Color.secondary : Color.accentColor)
             }
         }
         .frame(width: 64, height: 38)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var placeholderSystemImage: String {
+        if video.isImage {
+            return "photo.fill"
+        }
+        return video.libraryKind == .video ? "video.fill" : "lock.fill"
     }
 }
 

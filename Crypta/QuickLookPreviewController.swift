@@ -26,6 +26,16 @@ final class QuickLookPreviewController: NSObject {
         try showPreview(for: video, thumbnail: thumbnail)
     }
 
+    func togglePreview(for video: CryptaVideo, fileURL: URL, cleanupURL: URL?) throws {
+        if isPresented, previewedVideoID == video.id {
+            cleanup(cleanupURL ?? fileURL)
+            close()
+            return
+        }
+
+        try showPreview(for: video, fileURL: fileURL, cleanupURL: cleanupURL)
+    }
+
     func close() {
         guard item != nil || cleanupURL != nil else { return }
         panel?.close()
@@ -39,6 +49,26 @@ final class QuickLookPreviewController: NSObject {
         let previewURL = try writePreviewImage(thumbnail)
         item = QuickLookPreviewItem(url: previewURL, title: video.displayName)
         cleanupURL = previewURL
+        previewedVideoID = video.id
+
+        let previewPanel = QLPreviewPanel.shared()
+        previewPanel?.dataSource = self
+        previewPanel?.delegate = self
+        previewPanel?.reloadData()
+        previewPanel?.currentPreviewItemIndex = 0
+        previewPanel?.makeKeyAndOrderFront(nil)
+        panel = previewPanel
+        startMonitoringSpaceKey()
+
+        if let previousCleanupURL, previousCleanupURL != cleanupURL {
+            cleanup(previousCleanupURL)
+        }
+    }
+
+    private func showPreview(for video: CryptaVideo, fileURL: URL, cleanupURL nextCleanupURL: URL?) throws {
+        let previousCleanupURL = cleanupURL
+        item = QuickLookPreviewItem(url: fileURL, title: video.displayName)
+        cleanupURL = nextCleanupURL ?? fileURL
         previewedVideoID = video.id
 
         let previewPanel = QLPreviewPanel.shared()
@@ -84,10 +114,15 @@ final class QuickLookPreviewController: NSObject {
 
     private func cleanup(_ url: URL) {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) {
-            try? FileManager.default.removeItem(at: url)
-            let directory = url.deletingLastPathComponent()
-            if (try? FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty) == true {
-                try? FileManager.default.removeItem(at: directory)
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            if values?.isDirectory == true {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+                let directory = url.deletingLastPathComponent()
+                if (try? FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty) == true {
+                    try? FileManager.default.removeItem(at: directory)
+                }
             }
         }
     }

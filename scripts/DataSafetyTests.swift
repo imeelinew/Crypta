@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @main
@@ -9,6 +10,7 @@ struct DataSafetyTests {
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
+        try await testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected()
         try await testMkvThumbnailFallsBackToFFmpeg()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
@@ -167,6 +169,60 @@ struct DataSafetyTests {
         try expect(
             !playback.url.path.hasPrefix(harness.locations.vaultPackage.path + "/"),
             "Temporary playback file was written inside the vault package."
+        )
+    }
+
+    private static func testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = try samplePNGData()
+        let source = harness.root.appendingPathComponent("Secret.png", isDirectory: false)
+        try plaintext.write(to: source)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+
+        let image = try await store.importImage(from: source)
+
+        try expect(image.libraryKind == .encryptedImage, "Image import did not use the encrypted-image section.")
+        try expect(image.storageState == .encrypted, "Image import should be encrypted by default.")
+        try expect(image.plainFileName == nil, "Image import created a long-lived plain file.")
+        try expect(image.durationSeconds == nil, "Image import should not store a video duration.")
+        try expect(image.playbackPositionSeconds == nil, "Image import should not store playback position.")
+        try expect(!FileManager.default.fileExists(atPath: source.path), "Successful image import did not remove the source file.")
+        guard let encryptedFileName = image.encryptedFileName else {
+            throw TestFailure("Image import did not create an encrypted blob.")
+        }
+
+        let blob = harness.locations.moviesVault.appendingPathComponent(encryptedFileName)
+        try expect(FileManager.default.fileExists(atPath: blob.path), "Encrypted image blob was not written.")
+        try expect(try Data(contentsOf: blob) != plaintext, "Encrypted image blob contains plaintext bytes.")
+
+        let playback = try store.preparePlaybackURL(for: image)
+        defer {
+            if let cleanupURL = playback.cleanupURL {
+                try? FileManager.default.removeItem(at: cleanupURL)
+            }
+        }
+        try expect(try Data(contentsOf: playback.url) == plaintext, "Temporary image preview file did not restore plaintext.")
+        try expect(playback.cleanupURL != nil, "Encrypted image preview did not use a cleanup directory.")
+        try expect(
+            !playback.url.path.hasPrefix(harness.locations.vaultPackage.path + "/"),
+            "Temporary image preview file was written inside the vault package."
+        )
+
+        guard let thumbnail = await VideoThumbnailLoader.thumbnail(for: image, store: store) else {
+            throw TestFailure("Encrypted image thumbnail was not generated.")
+        }
+        try expect(thumbnail.size.width > 0 && thumbnail.size.height > 0, "Encrypted image thumbnail is empty.")
+        guard let decryptedThumbnail = try store.loadThumbnailData(for: image) else {
+            throw TestFailure("Encrypted image thumbnail was not cached.")
+        }
+        let thumbnailBlob = harness.locations.thumbnailCache
+            .appendingPathComponent("\(image.id.uuidString).v2.thumb", isDirectory: false)
+        try expect(FileManager.default.fileExists(atPath: thumbnailBlob.path), "Encrypted thumbnail blob was not written.")
+        try expect(
+            try Data(contentsOf: thumbnailBlob) != decryptedThumbnail,
+            "Thumbnail cache stored plaintext image data."
         )
     }
 
@@ -381,6 +437,34 @@ struct DataSafetyTests {
         guard process.terminationStatus == 0 else {
             throw TestFailure("ffmpeg fixture generation failed.")
         }
+    }
+
+    private static func samplePNGData() throws -> Data {
+        guard let representation = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 4,
+            pixelsHigh: 4,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            throw TestFailure("Could not create PNG fixture.")
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: representation)
+        NSColor.systemRed.setFill()
+        NSRect(x: 0, y: 0, width: 4, height: 4).fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let data = representation.representation(using: .png, properties: [:]) else {
+            throw TestFailure("Could not encode PNG fixture.")
+        }
+        return data
     }
 
     private static func sampleVideo(displayName: String, importedAt: Date) -> CryptaVideo {

@@ -5,7 +5,7 @@ import SwiftUI
 @Observable
 @MainActor
 final class CryptaLibrary {
-    private(set) var selectedSection: LibrarySection = .encrypted {
+    private(set) var selectedSection: LibrarySection = .video {
         didSet { selectFirstVideoIfNeeded() }
     }
     var selectedVideoIDs: Set<CryptaVideo.ID> = [] {
@@ -61,7 +61,7 @@ final class CryptaLibrary {
         let videos = visibleVideos
         let totalBytes = videos.reduce(Int64(0)) { $0 + $1.byteCount }
         let size = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-        return "\(videos.count) 个视频 · \(size)"
+        return "\(videos.count) 个\(selectedSection.itemNoun) · \(size)"
     }
 
     var canAccessSelectedSection: Bool {
@@ -107,7 +107,7 @@ final class CryptaLibrary {
     func unlockEncryptedSection() async {
         guard !encryptedSectionUnlocked, !isAuthenticatingEncryptedSection else { return }
         isAuthenticatingEncryptedSection = true
-        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看加密视频")
+        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看\(selectedSection.title)")
         isAuthenticatingEncryptedSection = false
 
         if didAuthenticate {
@@ -141,10 +141,13 @@ final class CryptaLibrary {
         VideoThumbnailLoader.clearMemoryCache()
     }
 
-    func importVideos(from urls: [URL]) async {
-        let candidates = urls.filter { CryptaVideoImport.isSupportedVideo($0) }
+    func importFiles(from urls: [URL]) async {
+        let targetSection = selectedSection
+        let candidates = urls.filter { url in
+            targetSection.isImageSection ? CryptaVideoImport.isSupportedImage(url) : CryptaVideoImport.isSupportedVideo(url)
+        }
         guard !candidates.isEmpty else {
-            errorMessage = "没有找到可导入的视频"
+            errorMessage = "没有找到可导入的\(targetSection.itemNoun)"
             return
         }
 
@@ -152,12 +155,15 @@ final class CryptaLibrary {
         defer { isImporting = false }
 
         var imported: [CryptaVideo] = []
-        let targetKind = selectedSection.libraryKind
+        let targetKind = targetSection.libraryKind
         for url in candidates {
             do {
                 let store = self.store
-                let video = try await Task.detached(priority: .userInitiated) {
-                    try await store.importVideo(from: url, storageState: .encrypted, libraryKind: targetKind)
+                let video = try await Task.detached(priority: .userInitiated) { () async throws -> CryptaVideo in
+                    if targetSection.isImageSection {
+                        return try await store.importImage(from: url)
+                    }
+                    return try await store.importVideo(from: url, storageState: .encrypted, libraryKind: targetKind)
                 }.value
                 imported.append(video)
             } catch {
@@ -170,14 +176,18 @@ final class CryptaLibrary {
         videos.append(contentsOf: imported)
         videos = videos.sortedForDisplay()
         preloadThumbnails(for: imported)
-        showToast("已导入 \(imported.count) 个视频")
-        if targetKind == .encrypted {
+        showToast("已导入 \(imported.count) 个\(targetSection.itemNoun)")
+        if targetSection.requiresAuthentication {
             playEncryptedVideoAddedSound()
         }
         if let firstImportedID = imported.first?.id {
             selectedVideoIDs = [firstImportedID]
             primarySelectedVideoID = firstImportedID
         }
+    }
+
+    func importVideos(from urls: [URL]) async {
+        await importFiles(from: urls)
     }
 
     func playSelectedVideo() async {
@@ -196,6 +206,11 @@ final class CryptaLibrary {
             return
         }
 
+        if video.isImage {
+            await previewImage(video)
+            return
+        }
+
         do {
             isWorking = true
             defer { isWorking = false }
@@ -211,6 +226,10 @@ final class CryptaLibrary {
 
     func play(_ video: CryptaVideo) async {
         guard canAccessSelectedSection else { return }
+        if video.isImage {
+            await previewImage(video)
+            return
+        }
         if video.libraryKind == .video {
             await playInExternalPlayer(video)
             return
@@ -283,6 +302,7 @@ final class CryptaLibrary {
     func decryptSelectedVideos(to destinationDirectory: URL) async {
         let targets = selectedVideos.filter { $0.storageState == .encrypted }
         guard !targets.isEmpty else { return }
+        let itemNoun = targets.first?.isImage == true ? "图片" : "视频"
 
         isWorking = true
         defer { isWorking = false }
@@ -317,7 +337,7 @@ final class CryptaLibrary {
 
         if failedCount > 0 {
             showToast("已解密 \(succeeded.count) 个，失败 \(failedCount) 个", kind: .error)
-            errorMessage = "有 \(failedCount) 个视频解密失败，失败项仍保留在加密库中。"
+            errorMessage = "有 \(failedCount) 个\(itemNoun)解密失败，失败项仍保留在加密库中。"
         } else {
             showToast("已解密 \(succeeded.count) 个")
         }
@@ -331,6 +351,7 @@ final class CryptaLibrary {
     }
 
     func delete(_ request: DeleteRequest) async {
+        let itemNoun = request.primaryVideo?.isImage == true ? "图片" : "视频"
         var deleted: [CryptaVideo] = []
         var failedCount = 0
         for video in request.videos {
@@ -358,7 +379,7 @@ final class CryptaLibrary {
 
         if failedCount > 0 {
             showToast("已删除 \(deleted.count) 个，失败 \(failedCount) 个", kind: .error)
-            errorMessage = "有 \(failedCount) 个视频删除失败。"
+            errorMessage = "有 \(failedCount) 个\(itemNoun)删除失败。"
         } else {
             showToast("已删除")
         }
@@ -481,6 +502,30 @@ final class CryptaLibrary {
             }
             showToast("播放失败", kind: .error)
             errorMessage = "播放失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func previewImage(_ video: CryptaVideo) async {
+        if quickLookPreviewController.isPreviewing(video) {
+            quickLookPreviewController.close()
+            return
+        }
+
+        do {
+            isWorking = true
+            defer { isWorking = false }
+
+            let store = self.store
+            let playback = try await Task.detached(priority: .userInitiated) {
+                try store.preparePlaybackURL(for: video)
+            }.value
+            try quickLookPreviewController.togglePreview(
+                for: video,
+                fileURL: playback.url,
+                cleanupURL: playback.cleanupURL
+            )
+        } catch {
+            errorMessage = "预览失败：\(error.localizedDescription)"
         }
     }
 

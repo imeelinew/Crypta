@@ -17,7 +17,7 @@ nonisolated struct CryptaStorageLocations: Sendable {
     var encryptedIndexBackup: URL {
         vaultPackage.appendingPathComponent("library.index.backup", isDirectory: false)
     }
-
+    #imageLiteral(resourceName: "大奶馒头逼.jpg")
     var thumbnailCache: URL {
         vaultPackage.appendingPathComponent("Thumbnails", isDirectory: true)
     }
@@ -72,6 +72,9 @@ nonisolated enum CryptaVideoImport {
     static let supportedExtensions: Set<String> = [
         "mov", "mp4", "m4v", "avi", "mkv", "webm", "hevc"
     ]
+    static let supportedImageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "heif", "tiff", "tif", "gif", "webp"
+    ]
 
     static func isSupportedVideo(_ url: URL) -> Bool {
         guard url.isFileURL else { return false }
@@ -82,6 +85,17 @@ nonisolated enum CryptaVideoImport {
             return false
         }
         return type.conforms(to: .movie) || type.conforms(to: .video)
+    }
+
+    static func isSupportedImage(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        if supportedImageExtensions.contains(url.pathExtension.lowercased()) {
+            return true
+        }
+        guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else {
+            return false
+        }
+        return type.conforms(to: .image)
     }
 }
 
@@ -178,6 +192,29 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         storageState: CryptaVideo.StorageState = .encrypted,
         libraryKind: CryptaVideo.LibraryKind = .encrypted
     ) async throws -> CryptaVideo {
+        try await importMedia(
+            from: sourceURL,
+            storageState: storageState,
+            libraryKind: libraryKind,
+            durationSeconds: await Self.videoDuration(for: sourceURL)
+        )
+    }
+
+    func importImage(from sourceURL: URL) async throws -> CryptaVideo {
+        try await importMedia(
+            from: sourceURL,
+            storageState: .encrypted,
+            libraryKind: .encryptedImage,
+            durationSeconds: nil
+        )
+    }
+
+    private func importMedia(
+        from sourceURL: URL,
+        storageState: CryptaVideo.StorageState,
+        libraryKind: CryptaVideo.LibraryKind,
+        durationSeconds: Double?
+    ) async throws -> CryptaVideo {
         try locations.prepareDirectories()
 
         let secureURL = sourceURL.startAccessingSecurityScopedResource()
@@ -192,7 +229,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         let displayName = sourceURL.deletingPathExtension().lastPathComponent
         let byteCount = Int64(values.fileSize ?? 0)
         let extensionName = sourceURL.pathExtension.lowercased()
-        let duration = await Self.videoDuration(for: sourceURL)
         var plainFileName: String?
         var encryptedFileName: String?
 
@@ -220,7 +256,7 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             encryptedFileName: encryptedFileName,
             importedAt: Date(),
             byteCount: byteCount,
-            durationSeconds: duration
+            durationSeconds: durationSeconds
         )
         index.videos.append(video)
         try saveIndex(index)

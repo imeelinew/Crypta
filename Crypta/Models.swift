@@ -1,9 +1,10 @@
 import Foundation
 import Security
 
-nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable {
+nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable, Sendable {
     case video
     case encrypted
+    case encryptedImage
 
     var id: String { rawValue }
 
@@ -11,6 +12,7 @@ nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .video: return "视频"
         case .encrypted: return "加密视频"
+        case .encryptedImage: return "加密图片"
         }
     }
 
@@ -18,6 +20,7 @@ nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .video: return "video.fill"
         case .encrypted: return "lock.fill"
+        case .encryptedImage: return "photo.fill"
         }
     }
 
@@ -25,11 +28,25 @@ nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .video: return .video
         case .encrypted: return .encrypted
+        case .encryptedImage: return .encryptedImage
         }
     }
 
     var requiresAuthentication: Bool {
-        self == .encrypted
+        switch self {
+        case .video:
+            return false
+        case .encrypted, .encryptedImage:
+            return true
+        }
+    }
+
+    var isImageSection: Bool {
+        self == .encryptedImage
+    }
+
+    var itemNoun: String {
+        isImageSection ? "图片" : "视频"
     }
 }
 
@@ -132,6 +149,11 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
     enum LibraryKind: String, Codable, Sendable {
         case video
         case encrypted
+        case encryptedImage
+    }
+
+    var isImage: Bool {
+        libraryKind == .encryptedImage
     }
 
     let id: UUID

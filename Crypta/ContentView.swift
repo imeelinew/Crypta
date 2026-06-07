@@ -33,14 +33,14 @@ struct ContentView: View {
                 Button {
                     importerPresented = true
                 } label: {
-                    Label("导入视频", systemImage: "plus")
+                    Label("导入\(library.selectedSection.itemNoun)", systemImage: "plus")
                 }
                 .disabled(library.isImporting || library.isWorking)
 
                 Button {
                     Task { await library.playSelectedVideo() }
                 } label: {
-                    Label("播放", systemImage: "play.fill")
+                    Label(openTitle, systemImage: openSystemImage)
                 }
                 .disabled(!library.canActOnSelection)
             }
@@ -56,21 +56,21 @@ struct ContentView: View {
                 }
                 .tint(deleteTint)
                 .disabled(!library.canActOnSelection)
-                .help("删除选中的视频")
+                .help("删除选中的\(library.selectedSection.itemNoun)")
             }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .fileImporter(
             isPresented: $importerPresented,
-            allowedContentTypes: [.movie, .video, .mpeg4Movie, .quickTimeMovie],
+            allowedContentTypes: allowedImportTypes,
             allowsMultipleSelection: true
         ) { result in
             if case .success(let urls) = result {
-                Task { await library.importVideos(from: urls) }
+                Task { await library.importFiles(from: urls) }
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            Task { await library.importVideos(from: urls) }
+            Task { await library.importFiles(from: urls) }
             return true
         } isTargeted: {
             dropIsTargeted = $0
@@ -115,7 +115,7 @@ struct ContentView: View {
                 Task { await library.rename(request, to: newName) }
             }
         }
-        .alert("删除视频？", isPresented: deleteAlertBinding, presenting: library.deleteRequest) { request in
+        .alert("删除\(library.selectedSection.itemNoun)？", isPresented: deleteAlertBinding, presenting: library.deleteRequest) { request in
             Button("取消", role: .cancel) {
                 library.deleteRequest = nil
             }
@@ -126,7 +126,7 @@ struct ContentView: View {
             if request.videos.count == 1, let video = request.primaryVideo {
                 Text("将从 Crypta 中删除“\(video.displayName)”。")
             } else {
-                Text("将从 Crypta 中删除所选 \(request.videos.count) 个视频。")
+                Text("将从 Crypta 中删除所选 \(request.videos.count) 个\(library.selectedSection.itemNoun)。")
             }
         }
         .alert("出错了", isPresented: errorAlertBinding, presenting: library.errorMessage) { _ in
@@ -170,6 +170,21 @@ struct ContentView: View {
         "lock.open.fill"
     }
 
+    private var openTitle: String {
+        library.selectedSection.isImageSection ? "打开" : "播放"
+    }
+
+    private var openSystemImage: String {
+        library.selectedSection.isImageSection ? "eye.fill" : "play.fill"
+    }
+
+    private var allowedImportTypes: [UTType] {
+        if library.selectedSection.isImageSection {
+            return [.image]
+        }
+        return [.movie, .video, .mpeg4Movie, .quickTimeMovie]
+    }
+
     @MainActor
     private func decryptSelectedVideos() async {
         guard let destinationDirectory = selectDecryptionDestination() else { return }
@@ -181,7 +196,7 @@ struct ContentView: View {
         let panel = NSOpenPanel()
         panel.title = "选择解密输出位置"
         panel.prompt = "解密到这里"
-        panel.message = "解密后的视频会从 Crypta 加密库中移除。"
+        panel.message = "解密后的\(library.selectedSection.itemNoun)会从 Crypta 加密库中移除。"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
