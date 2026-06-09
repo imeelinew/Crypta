@@ -11,7 +11,7 @@ struct DataSafetyTests {
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
         try await testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected()
-        try await testMkvThumbnailFallsBackToFFmpeg()
+        try await testMkvThumbnailUsesMiddleFrame()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
         try await testPlaybackCacheCleanupRemovesCrashLeftovers()
@@ -218,7 +218,7 @@ struct DataSafetyTests {
             throw TestFailure("Encrypted image thumbnail was not cached.")
         }
         let thumbnailBlob = harness.locations.thumbnailCache
-            .appendingPathComponent("\(image.id.uuidString).v2.thumb", isDirectory: false)
+            .appendingPathComponent("\(image.id.uuidString).v3.thumb", isDirectory: false)
         try expect(FileManager.default.fileExists(atPath: thumbnailBlob.path), "Encrypted thumbnail blob was not written.")
         try expect(
             try Data(contentsOf: thumbnailBlob) != decryptedThumbnail,
@@ -226,9 +226,9 @@ struct DataSafetyTests {
         )
     }
 
-    private static func testMkvThumbnailFallsBackToFFmpeg() async throws {
+    private static func testMkvThumbnailUsesMiddleFrame() async throws {
         guard let ffmpegURL = ffmpegExecutableURL() else {
-            print("Skipping mkv thumbnail fallback test: ffmpeg not found")
+            print("Skipping mkv thumbnail middle-frame test: ffmpeg not found")
             return
         }
 
@@ -241,8 +241,10 @@ struct DataSafetyTests {
             arguments: [
                 "-v", "error",
                 "-f", "lavfi",
-                "-i", "testsrc=size=160x90:rate=1",
-                "-t", "1",
+                "-i", "color=c=black:size=160x90:rate=1:d=1",
+                "-f", "lavfi",
+                "-i", "color=c=white:size=160x90:rate=1:d=1",
+                "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0",
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
                 source.path
@@ -250,9 +252,10 @@ struct DataSafetyTests {
         )
 
         guard let image = try await VideoThumbnailLoader.image(from: source) else {
-            throw TestFailure("MKV thumbnail fallback did not produce an image.")
+            throw TestFailure("MKV thumbnail generation did not produce an image.")
         }
-        try expect(image.size.width > 0 && image.size.height > 0, "MKV thumbnail fallback produced an empty image.")
+        try expect(image.size.width > 0 && image.size.height > 0, "MKV thumbnail generation produced an empty image.")
+        try expect(try averageBrightness(of: image) > 0.8, "MKV thumbnail did not use the middle frame.")
     }
 
     private static func testFailedImportKeepsSourceFileUntilIndexIsSaved() async throws {
@@ -437,6 +440,26 @@ struct DataSafetyTests {
         guard process.terminationStatus == 0 else {
             throw TestFailure("ffmpeg fixture generation failed.")
         }
+    }
+
+    private static func averageBrightness(of image: NSImage) throws -> Double {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            throw TestFailure("Could not read generated thumbnail pixels.")
+        }
+
+        let width = bitmap.pixelsWide
+        let height = bitmap.pixelsHigh
+        var total = 0.0
+        for y in 0..<height {
+            for x in 0..<width {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+                    continue
+                }
+                total += (Double(color.redComponent) + Double(color.greenComponent) + Double(color.blueComponent)) / 3
+            }
+        }
+        return total / Double(width * height)
     }
 
     private static func samplePNGData() throws -> Data {

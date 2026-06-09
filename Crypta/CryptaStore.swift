@@ -17,7 +17,7 @@ nonisolated struct CryptaStorageLocations: Sendable {
     var encryptedIndexBackup: URL {
         vaultPackage.appendingPathComponent("library.index.backup", isDirectory: false)
     }
-    #imageLiteral(resourceName: "大奶馒头逼.jpg")
+
     var thumbnailCache: URL {
         vaultPackage.appendingPathComponent("Thumbnails", isDirectory: true)
     }
@@ -419,7 +419,7 @@ nonisolated final class CryptaStore: @unchecked Sendable {
     }
 
     private func thumbnailURL(for video: CryptaVideo, in directory: URL) -> URL {
-        directory.appendingPathComponent("\(video.id.uuidString).v2.thumb", isDirectory: false)
+        directory.appendingPathComponent("\(video.id.uuidString).v3.thumb", isDirectory: false)
     }
 
     private func encryptedVersion(of video: CryptaVideo, plainURL: URL) throws -> CryptaVideo {

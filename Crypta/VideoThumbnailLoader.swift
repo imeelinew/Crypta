@@ -1,5 +1,4 @@
 import AppKit
-import AVFoundation
 
 enum VideoThumbnailLoader {
     @MainActor
@@ -78,46 +77,23 @@ enum VideoThumbnailLoader {
             }
             return image
         }
-        guard let image = try await image(from: playback.url) else {
+        guard let image = try await image(from: playback.url, durationSeconds: video.durationSeconds) else {
             throw CryptaError.thumbnailFailed
         }
         return image
     }
 
     static func image(from url: URL) async throws -> NSImage? {
-        do {
-            return try await avFoundationImage(from: url)
-        } catch {
-            return try ffmpegImage(from: url)
-        }
+        try await image(from: url, durationSeconds: nil)
     }
 
-    private static func avFoundationImage(from url: URL) async throws -> NSImage? {
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(
-            width: maximumThumbnailDimension,
-            height: maximumThumbnailDimension
-        )
-        let requestedTime = try await thumbnailTime(for: asset)
-        let cgImage: CGImage = try await withCheckedThrowingContinuation { continuation in
-            generator.generateCGImageAsynchronously(
-                for: requestedTime
-            ) { cgImage, _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let cgImage {
-                    continuation.resume(returning: cgImage)
-                } else {
-                    continuation.resume(throwing: CryptaError.thumbnailFailed)
-                }
-            }
-        }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    private static func image(from url: URL, durationSeconds: Double?) async throws -> NSImage? {
+        let duration = durationSeconds ?? (try? ffprobeDuration(from: url))
+        let seconds = thumbnailSeconds(for: duration)
+        return try ffmpegImage(from: url, seconds: seconds)
     }
 
-    private static func ffmpegImage(from url: URL) throws -> NSImage {
+    private static func ffmpegImage(from url: URL, seconds: Double) throws -> NSImage {
         guard let ffmpegURL = ffmpegExecutableURL() else {
             throw CryptaError.thumbnailFailed
         }
@@ -135,11 +111,12 @@ enum VideoThumbnailLoader {
         process.arguments = [
             "-v", "error",
             "-y",
-            "-ss", "0",
+            "-ss", String(format: "%.3f", seconds),
             "-i", url.path,
             "-frames:v", "1",
             "-an",
             "-sn",
+            "-vf", "scale=min(\(Int(maximumThumbnailDimension))\\,iw):-2",
             outputURL.path
         ]
         process.standardError = FileHandle.nullDevice
@@ -154,6 +131,36 @@ enum VideoThumbnailLoader {
         return image
     }
 
+    private static func ffprobeDuration(from url: URL) throws -> Double {
+        guard let ffprobeURL = ffprobeExecutableURL() else {
+            throw CryptaError.thumbnailFailed
+        }
+
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = ffprobeURL
+        process.arguments = [
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            url.path
+        ]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0,
+              let value = String(data: data, encoding: .utf8),
+              let duration = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              duration.isFinite,
+              duration > 0 else {
+            throw CryptaError.thumbnailFailed
+        }
+        return duration
+    }
+
     private static func ffmpegExecutableURL() -> URL? {
         let fileManager = FileManager.default
         let candidates = [
@@ -166,11 +173,23 @@ enum VideoThumbnailLoader {
             .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    private static func thumbnailTime(for asset: AVURLAsset) async throws -> CMTime {
-        let durationTime = try await asset.load(.duration)
-        let duration = CMTimeGetSeconds(durationTime)
-        let seconds = duration.isFinite && duration > 0 ? duration / 2 : 0.2
-        return CMTime(seconds: seconds, preferredTimescale: 600)
+    private static func ffprobeExecutableURL() -> URL? {
+        let fileManager = FileManager.default
+        let candidates = [
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            "/usr/bin/ffprobe"
+        ]
+        return candidates
+            .map { URL(fileURLWithPath: $0) }
+            .first { fileManager.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func thumbnailSeconds(for duration: Double?) -> Double {
+        guard let duration, duration.isFinite, duration > 0 else {
+            return 0.2
+        }
+        return max(0.2, duration / 2)
     }
 
     private static func jpegData(from image: NSImage) -> Data? {
