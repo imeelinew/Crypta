@@ -29,20 +29,13 @@ struct ContentView: View {
 
             ToolbarSpacer(.fixed)
 
-            ToolbarItemGroup {
+            ToolbarItem {
                 Button {
                     importerPresented = true
                 } label: {
                     Label("导入\(library.selectedSection.itemNoun)", systemImage: "plus")
                 }
                 .disabled(library.isImporting || library.isWorking)
-
-                Button {
-                    Task { await library.playSelectedVideo() }
-                } label: {
-                    Label(openTitle, systemImage: openSystemImage)
-                }
-                .disabled(!library.canActOnSelection)
             }
 
             ToolbarSpacer(.fixed)
@@ -168,14 +161,6 @@ struct ContentView: View {
 
     private var transformSystemImage: String {
         "lock.open.fill"
-    }
-
-    private var openTitle: String {
-        library.selectedSection.isImageSection ? "打开" : "播放"
-    }
-
-    private var openSystemImage: String {
-        library.selectedSection.isImageSection ? "eye.fill" : "play.fill"
     }
 
     private var allowedImportTypes: [UTType] {
