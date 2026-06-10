@@ -6,7 +6,6 @@ struct ContentView: View {
     @Bindable var library: CryptaLibrary
     @State private var importerPresented = false
     @State private var dropIsTargeted = false
-    private let deleteTint = Color(red: 0.72, green: 0.20, blue: 0.24)
 
     var body: some View {
         NavigationSplitView {
@@ -38,19 +37,6 @@ struct ContentView: View {
                 .disabled(library.isImporting || library.isWorking)
             }
 
-            ToolbarSpacer(.fixed)
-
-            ToolbarItem {
-                Button {
-                    library.confirmDeleteSelectedVideo()
-                } label: {
-                    Label("删除", systemImage: "trash")
-                        .foregroundStyle(deleteTint)
-                }
-                .tint(deleteTint)
-                .disabled(!library.canActOnSelection)
-                .help("删除选中的\(library.selectedSection.itemNoun)")
-            }
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .fileImporter(

@@ -68,6 +68,9 @@ struct VideoListPage: View {
                                         Button("重命名") {
                                             library.requestRename(video)
                                         }
+                                        Button("删除") {
+                                            library.confirmDeleteVideo(video)
+                                        }
                                     }
                             }
                         }

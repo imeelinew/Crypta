@@ -343,11 +343,9 @@ final class CryptaLibrary {
         }
     }
 
-    func confirmDeleteSelectedVideo() {
+    func confirmDeleteVideo(_ video: CryptaVideo) {
         guard canAccessSelectedSection else { return }
-        let selectedVideos = selectedVideos
-        guard !selectedVideos.isEmpty else { return }
-        deleteRequest = DeleteRequest(videos: selectedVideos)
+        deleteRequest = DeleteRequest(videos: [video])
     }
 
     func delete(_ request: DeleteRequest) async {
