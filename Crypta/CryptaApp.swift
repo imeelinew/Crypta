@@ -16,6 +16,7 @@ struct CryptaApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .saveItem) { }
         }
     }
 }

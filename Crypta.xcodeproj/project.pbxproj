@@ -202,11 +202,12 @@
 				};
 			};
 			buildConfigurationList = 451AD41D2FD1532300F8A862 /* Build configuration list for PBXProject "Crypta" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
-				en,
 				Base,
+				en,
+				"zh-Hans",
 			);
 			mainGroup = 451AD4192FD1532300F8A862;
 			minimizedProjectReferenceProxies = 1;
