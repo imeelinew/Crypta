@@ -97,7 +97,6 @@ struct VideoListPage: View {
             }
         }
         .navigationTitle(library.selectedSection.title)
-        .searchable(text: $library.searchText, placement: .toolbar, prompt: "搜索\(library.selectedSection.itemNoun)")
     }
 
     private var emptyTitle: String {
