@@ -32,9 +32,9 @@ struct ContentView: View {
                 Button {
                     importerPresented = true
                 } label: {
-                    Label("导入\(library.selectedSection.itemNoun)", systemImage: "plus")
+                    Label("导入\(library.selectedGroup?.itemNoun ?? "文件")", systemImage: "plus")
                 }
-                .disabled(library.isImporting || library.isWorking)
+                .disabled(library.isImporting || library.isWorking || library.selectedGroup == nil)
             }
 
         }
@@ -49,6 +49,7 @@ struct ContentView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
+            guard library.selectedGroup != nil else { return false }
             Task { await library.importFiles(from: urls) }
             return true
         } isTargeted: {
@@ -94,7 +95,17 @@ struct ContentView: View {
                 Task { await library.rename(request, to: newName) }
             }
         }
-        .alert("删除\(library.selectedSection.itemNoun)？", isPresented: deleteAlertBinding, presenting: library.deleteRequest) { request in
+        .sheet(item: $library.editGroupRequest) { request in
+            EditGroupNameSheet(request: request) { newName in
+                Task { await library.renameGroup(request, to: newName) }
+            }
+        }
+        .sheet(isPresented: $library.newGroupFormPresented) {
+            NewGroupSheet { name, encryptionLevel, mediaType in
+                Task { await library.createGroup(name: name, encryptionLevel: encryptionLevel, mediaType: mediaType) }
+            }
+        }
+        .alert("删除\(library.selectedGroup?.itemNoun ?? "文件")？", isPresented: deleteAlertBinding, presenting: library.deleteRequest) { request in
             Button("取消", role: .cancel) {
                 library.deleteRequest = nil
             }
@@ -105,7 +116,7 @@ struct ContentView: View {
             if request.videos.count == 1, let video = request.primaryVideo {
                 Text("将从 Crypta 中删除“\(video.displayName)”。")
             } else {
-                Text("将从 Crypta 中删除所选 \(request.videos.count) 个\(library.selectedSection.itemNoun)。")
+                Text("将从 Crypta 中删除所选 \(request.videos.count) 个\(library.selectedGroup?.itemNoun ?? "文件")。")
             }
         }
         .alert("出错了", isPresented: errorAlertBinding, presenting: library.errorMessage) { _ in
@@ -150,10 +161,7 @@ struct ContentView: View {
     }
 
     private var allowedImportTypes: [UTType] {
-        if library.selectedSection.isImageSection {
-            return [.image]
-        }
-        return [.movie, .video, .mpeg4Movie, .quickTimeMovie]
+        library.selectedGroup?.mediaType.allowedImportTypes ?? []
     }
 
     @MainActor
@@ -167,7 +175,7 @@ struct ContentView: View {
         let panel = NSOpenPanel()
         panel.title = "选择解密输出位置"
         panel.prompt = "解密到这里"
-        panel.message = "解密后的\(library.selectedSection.itemNoun)会从 Crypta 加密库中移除。"
+        panel.message = "解密后的\(library.selectedGroup?.itemNoun ?? "文件")会从 Crypta 加密库中移除。"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false

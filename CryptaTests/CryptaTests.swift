@@ -12,15 +12,17 @@ import Testing
 struct CryptaTests {
 
     @MainActor
-    @Test func libraryOpensOnVideoSection() {
+    @Test func libraryOpensWithoutSelectedGroup() {
         let library = CryptaLibrary()
 
-        #expect(library.selectedSection == .video)
+        #expect(library.selectedGroupID == nil)
     }
 
-    @Test func encryptedImageSectionRequiresAuthentication() {
-        #expect(LibrarySection.encryptedImage.requiresAuthentication)
-        #expect(LibrarySection.encryptedImage.libraryKind == .encryptedImage)
+    @Test func encryptedGroupRequiresAuthentication() {
+        let standardGroup = LibraryGroup(name: "标准", encryptionLevel: .standard, mediaType: .video)
+        let extendedGroup = LibraryGroup(name: "扩展", encryptionLevel: .extended, mediaType: .video)
+        #expect(!standardGroup.requiresAuthentication)
+        #expect(extendedGroup.requiresAuthentication)
     }
 
     @Test func vaultLivesInMoviesFolder() async throws {

@@ -142,6 +142,38 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         }
     }
 
+    func createGroup(_ group: LibraryGroup) throws {
+        var index = try loadIndex()
+        guard !index.groups.contains(where: { $0.name == group.name }) else {
+            throw CryptaError.duplicateGroupName
+        }
+        index.groups.append(group)
+        try saveIndex(index)
+    }
+
+    func renameGroup(id: String, to newName: String) throws {
+        var index = try loadIndex()
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let position = index.groups.firstIndex(where: { $0.id == id }) else {
+            throw CryptaError.groupNotFound
+        }
+        guard !index.groups.contains(where: { $0.id != id && $0.name == trimmed }) else {
+            throw CryptaError.duplicateGroupName
+        }
+        index.groups[position].name = trimmed
+        try saveIndex(index)
+    }
+
+    func deleteGroup(id: String) throws {
+        var index = try loadIndex()
+        guard !index.videos.contains(where: { $0.libraryKind.rawValue == id }) else {
+            throw CryptaError.groupNotEmpty
+        }
+        index.groups.removeAll { $0.id == id }
+        try saveIndex(index)
+    }
+
     func saveIndex(_ index: CryptaIndex) throws {
         try locations.prepareDirectories()
         let plaintext = try indexEncoder.encode(index)
@@ -190,21 +222,24 @@ nonisolated final class CryptaStore: @unchecked Sendable {
     func importVideo(
         from sourceURL: URL,
         storageState: CryptaVideo.StorageState = .encrypted,
-        libraryKind: CryptaVideo.LibraryKind = .encrypted
+        libraryKind: LibraryKind = .encrypted,
+        mediaType: MediaType = .video
     ) async throws -> CryptaVideo {
         try await importMedia(
             from: sourceURL,
             storageState: storageState,
             libraryKind: libraryKind,
+            mediaType: mediaType,
             durationSeconds: await Self.videoDuration(for: sourceURL)
         )
     }
 
-    func importImage(from sourceURL: URL) async throws -> CryptaVideo {
+    func importImage(from sourceURL: URL, libraryKind: LibraryKind = .encryptedImage) async throws -> CryptaVideo {
         try await importMedia(
             from: sourceURL,
             storageState: .encrypted,
-            libraryKind: .encryptedImage,
+            libraryKind: libraryKind,
+            mediaType: .image,
             durationSeconds: nil
         )
     }
@@ -212,7 +247,8 @@ nonisolated final class CryptaStore: @unchecked Sendable {
     private func importMedia(
         from sourceURL: URL,
         storageState: CryptaVideo.StorageState,
-        libraryKind: CryptaVideo.LibraryKind,
+        libraryKind: LibraryKind,
+        mediaType: MediaType,
         durationSeconds: Double?
     ) async throws -> CryptaVideo {
         try locations.prepareDirectories()
@@ -251,6 +287,7 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             displayName: displayName,
             originalExtension: extensionName,
             libraryKind: libraryKind,
+            mediaType: mediaType,
             storageState: storageState,
             plainFileName: plainFileName,
             encryptedFileName: encryptedFileName,

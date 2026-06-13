@@ -5,13 +5,22 @@ struct SidebarView: View {
     @Bindable var library: CryptaLibrary
 
     var body: some View {
-        List(selection: sectionSelection) {
-            ForEach(LibrarySection.allCases) { section in
-                NavigationLink(value: section) {
-                    Label(section.title, systemImage: section.systemImage)
+        List(selection: groupSelection) {
+            ForEach(library.groups) { group in
+                    NavigationLink(value: group.id) {
+                        Label(group.name, systemImage: group.systemImage)
+                    }
+                    .listRowBackground(Color.clear)
+                    .contextMenu {
+                        Button("重命名") {
+                            library.requestEditGroup(group)
+                        }
+                        Button("删除") {
+                            Task { await library.deleteGroup(group) }
+                        }
+                        .disabled(!library.canDeleteSelectedGroup)
+                    }
                 }
-                .listRowBackground(Color.clear)
-            }
         }
         .navigationTitle("Crypta")
         .navigationSplitViewColumnWidth(min: 150, ideal: 180)
@@ -20,12 +29,13 @@ struct SidebarView: View {
         .background(TransparentListBackgroundInstaller())
     }
 
-    private var sectionSelection: Binding<LibrarySection?> {
+    private var groupSelection: Binding<String?> {
         Binding(
-            get: { library.selectedSection },
-            set: { nextSection in
-                guard let nextSection else { return }
-                Task { await library.selectSection(nextSection) }
+            get: { library.selectedGroupID },
+            set: { nextID in
+                guard let nextID,
+                      let group = library.groups.first(where: { $0.id == nextID }) else { return }
+                Task { await library.selectGroup(group) }
             }
         )
     }
@@ -36,83 +46,83 @@ struct VideoListPage: View {
 
     var body: some View {
         Group {
-            if !library.canAccessSelectedSection {
-                LockedEncryptedSectionView(
-                    section: library.selectedSection,
-                    isAuthenticating: library.isAuthenticatingEncryptedSection
-                ) {
-                    Task { await library.unlockEncryptedSection() }
+            if library.groups.isEmpty {
+                ContentUnavailableView {
+                    Label("无保险箱", systemImage: "folder.badge.plus")
+                } description: {
+                    Text("新建一个保险箱来开始")
                 }
-            } else {
-                VStack(spacing: 0) {
-                    VideoListHeader(
-                        sortMode: $library.sortMode,
-                        summary: library.visibleVideoSummary
-                    )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear)
+            } else if let group = library.selectedGroup {
+                if !library.canAccessSelectedGroup {
+                    LockedEncryptedSectionView(
+                        group: group,
+                        isAuthenticating: library.isAuthenticatingEncryptedSection
+                    ) {
+                        Task { await library.unlockEncryptedSection() }
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        VideoListHeader(
+                            sortMode: $library.sortMode,
+                            summary: library.visibleVideoSummary
+                        )
 
-                    if library.visibleVideos.isEmpty {
-                        ContentUnavailableView {
-                            Label(emptyTitle, systemImage: library.selectedSection.systemImage)
-                        } description: {
-                            Text(emptyDescription)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.clear)
-                    } else {
-                        List(selection: $library.selectedVideoIDs) {
-                            ForEach(library.visibleVideos) { video in
-                                VideoRow(video: video)
-                                    .tag(video.id)
-                                    .listRowBackground(Color.clear)
-                                    .contextMenu {
-                                        Button("重命名") {
-                                            library.requestRename(video)
-                                        }
-                                        Button("删除") {
-                                            library.confirmDeleteVideo(video)
-                                        }
-                                    }
+                        if library.visibleVideos.isEmpty {
+                            ContentUnavailableView {
+                                Label("无\(group.itemNoun)", systemImage: group.systemImage)
+                            } description: {
+                                Text("拖拽以导入\(group.itemNoun)")
                             }
-                        }
-                        .listStyle(.inset)
-                        .scrollContentBackground(.hidden)
-                        .background {
-                            Color.clear
-                            VideoListInteractionInstaller(
-                                videos: library.visibleVideos,
-                                onDoubleClick: { video in
-                                    library.selectOnly(video)
-                                    Task { await library.play(video) }
-                                },
-                                onSpacePreview: {
-                                    Task { await library.previewSelectedVideo() }
-                                },
-                                onSelectAll: {
-                                    library.selectAllVisibleVideos()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.clear)
+                        } else {
+                            List(selection: $library.selectedVideoIDs) {
+                                ForEach(library.visibleVideos) { video in
+                                    VideoRow(video: video)
+                                        .tag(video.id)
+                                        .listRowBackground(Color.clear)
+                                        .contextMenu {
+                                            Button("重命名") {
+                                                library.requestRename(video)
+                                            }
+                                            Button("删除") {
+                                                library.confirmDeleteVideo(video)
+                                            }
+                                        }
                                 }
-                            )
+                            }
+                            .listStyle(.inset)
+                            .scrollContentBackground(.hidden)
+                            .background {
+                                Color.clear
+                                VideoListInteractionInstaller(
+                                    videos: library.visibleVideos,
+                                    onDoubleClick: { video in
+                                        library.selectOnly(video)
+                                        Task { await library.play(video) }
+                                    },
+                                    onSpacePreview: {
+                                        Task { await library.previewSelectedVideo() }
+                                    },
+                                    onSelectAll: {
+                                        library.selectAllVisibleVideos()
+                                    }
+                                )
+                            }
                         }
                     }
                 }
+            } else {
+                ContentUnavailableView {
+                    Label("选择保险箱", systemImage: "folder")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear)
             }
         }
-        .navigationTitle(library.selectedSection.title)
-    }
-
-    private var emptyTitle: String {
-        switch library.selectedSection {
-        case .video: return "无视频"
-        case .encrypted: return "无加密视频"
-        case .encryptedImage: return "无加密图片"
-        }
-    }
-
-    private var emptyDescription: String {
-        switch library.selectedSection {
-        case .video: return "拖拽以导入视频"
-        case .encrypted: return "拖拽以导入加密视频"
-        case .encryptedImage: return "拖拽以导入加密图片"
-        }
+        .navigationTitle(library.selectedGroup?.name ?? "Crypta")
     }
 }
 
@@ -188,20 +198,20 @@ private struct VideoSortPopup: NSViewRepresentable {
 }
 
 private struct LockedEncryptedSectionView: View {
-    let section: LibrarySection
+    let group: LibraryGroup
     let isAuthenticating: Bool
     let unlock: () -> Void
 
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: section.systemImage)
+            Image(systemName: group.systemImage)
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             Text("已加密")
                 .font(.title3.weight(.semibold))
 
-            Button(isAuthenticating ? "正在验证" : "解锁\(section.itemNoun)") {
+            Button(isAuthenticating ? "正在验证" : "解锁\(group.itemNoun)") {
                 unlock()
             }
             .disabled(isAuthenticating)
@@ -446,7 +456,7 @@ struct ThumbnailView: View {
             } else {
                 Image(systemName: placeholderSystemImage)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(video.libraryKind == .video ? Color.secondary : Color.accentColor)
+                    .foregroundStyle(Color.secondary)
             }
         }
         .frame(width: 64, height: 38)
@@ -457,7 +467,7 @@ struct ThumbnailView: View {
         if video.isImage {
             return "photo.fill"
         }
-        return video.libraryKind == .video ? "video.fill" : "lock.fill"
+        return "video.fill"
     }
 }
 

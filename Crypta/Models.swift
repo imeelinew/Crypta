@@ -1,52 +1,80 @@
 import Foundation
 import Security
+import UniformTypeIdentifiers
 
-nonisolated enum LibrarySection: String, CaseIterable, Identifiable, Hashable, Sendable {
+nonisolated struct LibraryKind: RawRepresentable, Codable, Hashable, Sendable, Equatable {
+    var rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+
+    static let video = LibraryKind(rawValue: "video")
+    static let encrypted = LibraryKind(rawValue: "encrypted")
+    static let encryptedImage = LibraryKind(rawValue: "encryptedImage")
+}
+
+nonisolated enum EncryptionLevel: String, Codable, Sendable, CaseIterable, Identifiable {
+    case standard
+    case extended
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return "标准加密"
+        case .extended: return "扩展加密"
+        }
+    }
+}
+
+nonisolated enum MediaType: String, Codable, Sendable, CaseIterable, Identifiable {
     case video
-    case encrypted
-    case encryptedImage
+    case image
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .video: return "视频"
-        case .encrypted: return "加密视频"
-        case .encryptedImage: return "加密图片"
+        case .image: return "图片"
+        }
+    }
+
+    var itemNoun: String {
+        switch self {
+        case .video: return "视频"
+        case .image: return "图片"
         }
     }
 
     var systemImage: String {
         switch self {
         case .video: return "video.fill"
-        case .encrypted: return "lock.fill"
-        case .encryptedImage: return "photo.fill"
+        case .image: return "photo.fill"
         }
     }
 
-    var libraryKind: CryptaVideo.LibraryKind {
+    var allowedImportTypes: [UTType] {
         switch self {
-        case .video: return .video
-        case .encrypted: return .encrypted
-        case .encryptedImage: return .encryptedImage
+        case .video: return [.movie, .video, .mpeg4Movie, .quickTimeMovie]
+        case .image: return [.image]
         }
     }
+}
 
-    var requiresAuthentication: Bool {
-        switch self {
-        case .video:
-            return false
-        case .encrypted, .encryptedImage:
-            return true
-        }
-    }
+nonisolated struct LibraryGroup: Codable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var encryptionLevel: EncryptionLevel
+    var mediaType: MediaType
 
-    var isImageSection: Bool {
-        self == .encryptedImage
-    }
+    var requiresAuthentication: Bool { encryptionLevel == .extended }
+    var systemImage: String { mediaType.systemImage }
+    var itemNoun: String { mediaType.itemNoun }
 
-    var itemNoun: String {
-        isImageSection ? "图片" : "视频"
+    init(id: String = UUID().uuidString, name: String, encryptionLevel: EncryptionLevel, mediaType: MediaType) {
+        self.id = id
+        self.name = name
+        self.encryptionLevel = encryptionLevel
+        self.mediaType = mediaType
     }
 }
 
@@ -67,6 +95,17 @@ nonisolated struct DeleteRequest: Identifiable {
 
     var primaryVideo: CryptaVideo? {
         videos.first
+    }
+}
+
+nonisolated struct EditGroupRequest: Identifiable {
+    let id = UUID()
+    let group: LibraryGroup
+    var name: String
+
+    init(group: LibraryGroup) {
+        self.group = group
+        self.name = group.name
     }
 }
 
@@ -146,20 +185,11 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         case encrypted
     }
 
-    enum LibraryKind: String, Codable, Sendable {
-        case video
-        case encrypted
-        case encryptedImage
-    }
-
-    var isImage: Bool {
-        libraryKind == .encryptedImage
-    }
-
     let id: UUID
     var displayName: String
     let originalExtension: String
     var libraryKind: LibraryKind
+    var mediaType: MediaType
     var storageState: StorageState
     var plainFileName: String?
     var encryptedFileName: String?
@@ -167,6 +197,10 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
     let byteCount: Int64
     let durationSeconds: Double?
     var playbackPositionSeconds: Double?
+
+    var isImage: Bool {
+        mediaType == .image
+    }
 
     var detailLine: String {
         let size = ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
@@ -179,6 +213,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         displayName: String,
         originalExtension: String,
         libraryKind: LibraryKind = .encrypted,
+        mediaType: MediaType = .video,
         storageState: StorageState,
         plainFileName: String?,
         encryptedFileName: String?,
@@ -191,6 +226,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         self.displayName = displayName
         self.originalExtension = originalExtension
         self.libraryKind = libraryKind
+        self.mediaType = mediaType
         self.storageState = storageState
         self.plainFileName = plainFileName
         self.encryptedFileName = encryptedFileName
@@ -211,6 +247,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         playbackPositionSeconds = try container.decodeIfPresent(Double.self, forKey: .playbackPositionSeconds)
         storageState = try container.decodeIfPresent(StorageState.self, forKey: .storageState) ?? .encrypted
         libraryKind = try container.decodeIfPresent(LibraryKind.self, forKey: .libraryKind) ?? .encrypted
+        mediaType = try container.decodeIfPresent(MediaType.self, forKey: .mediaType) ?? .video
         plainFileName = try container.decodeIfPresent(String.self, forKey: .plainFileName)
         encryptedFileName = try container.decodeIfPresent(String.self, forKey: .encryptedFileName)
     }
@@ -220,6 +257,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         case displayName
         case originalExtension
         case libraryKind
+        case mediaType
         case storageState
         case plainFileName
         case encryptedFileName
@@ -242,7 +280,24 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
 }
 
 nonisolated struct CryptaIndex: Codable, Sendable {
+    var groups: [LibraryGroup] = []
     var videos: [CryptaVideo] = []
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.groups = try container.decodeIfPresent([LibraryGroup].self, forKey: .groups) ?? []
+        self.videos = try container.decodeIfPresent([CryptaVideo].self, forKey: .videos) ?? []
+    }
+
+    init(groups: [LibraryGroup] = [], videos: [CryptaVideo] = []) {
+        self.groups = groups
+        self.videos = videos
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case groups
+        case videos
+    }
 }
 
 nonisolated extension Array where Element == CryptaVideo {
@@ -271,6 +326,9 @@ nonisolated enum CryptaError: LocalizedError {
     case externalPlayerOpenFailed
     case keychainReadFailed(OSStatus)
     case keychainWriteFailed(OSStatus)
+    case groupNotEmpty
+    case groupNotFound
+    case duplicateGroupName
 
     var errorDescription: String? {
         switch self {
@@ -302,6 +360,12 @@ nonisolated enum CryptaError: LocalizedError {
             return "无法读取钥匙串密钥（\(status)）"
         case .keychainWriteFailed(let status):
             return "无法保存钥匙串密钥（\(status)）"
+        case .groupNotEmpty:
+            return "保险箱内仍有文件，无法删除"
+        case .groupNotFound:
+            return "找不到指定的保险箱"
+        case .duplicateGroupName:
+            return "已存在同名保险箱"
         }
     }
 }

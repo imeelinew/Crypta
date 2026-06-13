@@ -15,7 +15,12 @@ struct CryptaApp: App {
                 }
         }
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .newItem) {
+                Button("新建保险箱") {
+                    library.newGroupFormPresented = true
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
             CommandGroup(replacing: .saveItem) { }
         }
     }

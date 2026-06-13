@@ -82,6 +82,14 @@ struct DataSafetyTests {
             plainVideo.libraryKind == .encrypted,
             "Legacy plain videos without an explicit category should stay out of the video section."
         )
+        try expect(
+            encryptedVideo.mediaType == .video,
+            "Legacy encrypted videos should default to video media type."
+        )
+        try expect(
+            plainVideo.mediaType == .video,
+            "Legacy plain videos should default to video media type."
+        )
     }
 
     private static func testMissingKeyDoesNotCreateReplacementWhenIndexExists() async throws {
@@ -145,9 +153,10 @@ struct DataSafetyTests {
         try plaintext.write(to: source)
         let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
 
-        let video = try await store.importVideo(from: source, libraryKind: .video)
+        let video = try await store.importVideo(from: source, libraryKind: .video, mediaType: .video)
 
         try expect(video.libraryKind == .video, "Video-section import did not keep its semantic category.")
+        try expect(video.mediaType == .video, "Video import did not set video media type.")
         try expect(video.storageState == .encrypted, "Video-section import should still be encrypted by default.")
         try expect(video.plainFileName == nil, "Video-section import created a long-lived plain file.")
         guard let encryptedFileName = video.encryptedFileName else {
@@ -183,7 +192,7 @@ struct DataSafetyTests {
 
         let image = try await store.importImage(from: source)
 
-        try expect(image.libraryKind == .encryptedImage, "Image import did not use the encrypted-image section.")
+        try expect(image.mediaType == .image, "Image import did not set image media type.")
         try expect(image.storageState == .encrypted, "Image import should be encrypted by default.")
         try expect(image.plainFileName == nil, "Image import created a long-lived plain file.")
         try expect(image.durationSeconds == nil, "Image import should not store a video duration.")
@@ -495,6 +504,7 @@ struct DataSafetyTests {
             id: UUID(),
             displayName: displayName,
             originalExtension: "mp4",
+            mediaType: .video,
             storageState: .encrypted,
             plainFileName: nil,
             encryptedFileName: UUID().uuidString,
@@ -544,6 +554,7 @@ private final class StoreHarness {
             id: UUID(),
             displayName: displayName,
             originalExtension: "mp4",
+            mediaType: .video,
             storageState: .encrypted,
             plainFileName: nil,
             encryptedFileName: encryptedFileName,

@@ -5,7 +5,8 @@ import SwiftUI
 @Observable
 @MainActor
 final class CryptaLibrary {
-    private(set) var selectedSection: LibrarySection = .video {
+    var groups: [LibraryGroup] = []
+    private(set) var selectedGroupID: String? = nil {
         didSet { selectFirstVideoIfNeeded() }
     }
     var selectedVideoIDs: Set<CryptaVideo.ID> = [] {
@@ -14,6 +15,8 @@ final class CryptaLibrary {
     private var primarySelectedVideoID: CryptaVideo.ID?
     var renameRequest: RenameRequest?
     var deleteRequest: DeleteRequest?
+    var editGroupRequest: EditGroupRequest?
+    var newGroupFormPresented = false
     var toast: CryptaToast?
     var searchText = ""
     var sortMode = VideoSortMode.stored {
@@ -47,9 +50,15 @@ final class CryptaLibrary {
         }
     }
 
+    var selectedGroup: LibraryGroup? {
+        guard let id = selectedGroupID else { return nil }
+        return groups.first { $0.id == id }
+    }
+
     var visibleVideos: [CryptaVideo] {
-        guard canAccessSelectedSection else { return [] }
-        let sectionVideos = videos.filter { $0.libraryKind == selectedSection.libraryKind }
+        guard canAccessSelectedGroup else { return [] }
+        guard let group = selectedGroup else { return [] }
+        let sectionVideos = videos.filter { $0.libraryKind.rawValue == group.id }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filteredVideos = query.isEmpty ? sectionVideos : sectionVideos.filter { video in
             video.displayName.localizedStandardContains(query)
@@ -61,15 +70,22 @@ final class CryptaLibrary {
         let videos = visibleVideos
         let totalBytes = videos.reduce(Int64(0)) { $0 + $1.byteCount }
         let size = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-        return "\(videos.count) 个\(selectedSection.itemNoun) · \(size)"
+        let noun = selectedGroup?.itemNoun ?? "文件"
+        return "\(videos.count) 个\(noun) · \(size)"
     }
 
-    var canAccessSelectedSection: Bool {
-        !selectedSection.requiresAuthentication || encryptedSectionUnlocked
+    var canAccessSelectedGroup: Bool {
+        guard let group = selectedGroup else { return false }
+        return !group.requiresAuthentication || encryptedSectionUnlocked
+    }
+
+    var canDeleteSelectedGroup: Bool {
+        guard let group = selectedGroup else { return false }
+        return !videos.contains(where: { $0.libraryKind.rawValue == group.id })
     }
 
     var selectedVideo: CryptaVideo? {
-        guard canAccessSelectedSection else { return nil }
+        guard canAccessSelectedGroup else { return nil }
         if let primarySelectedVideoID,
            let primary = visibleVideos.first(where: { $0.id == primarySelectedVideoID && selectedVideoIDs.contains($0.id) }) {
             return primary
@@ -78,7 +94,7 @@ final class CryptaLibrary {
     }
 
     var selectedVideos: [CryptaVideo] {
-        guard canAccessSelectedSection else { return [] }
+        guard canAccessSelectedGroup else { return [] }
         return visibleVideos.filter { selectedVideoIDs.contains($0.id) }
     }
 
@@ -92,22 +108,31 @@ final class CryptaLibrary {
 
     func load() async {
         do {
-            videos = try store.loadIndex().videos.sortedForDisplay()
+            let index = try store.loadIndex()
+            groups = index.groups
+            videos = index.videos.sortedForDisplay()
+            if selectedGroupID == nil, let firstGroup = groups.first {
+                selectedGroupID = firstGroup.id
+            }
             selectFirstVideoIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func selectSection(_ section: LibrarySection) async {
-        guard section != selectedSection else { return }
-        selectedSection = section
+    func selectGroup(_ group: LibraryGroup) async {
+        guard group.id != selectedGroupID else { return }
+        selectedGroupID = group.id
+        if group.requiresAuthentication {
+            encryptedSectionUnlocked = false
+        }
     }
 
     func unlockEncryptedSection() async {
         guard !encryptedSectionUnlocked, !isAuthenticatingEncryptedSection else { return }
+        guard let group = selectedGroup else { return }
         isAuthenticatingEncryptedSection = true
-        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看\(selectedSection.title)")
+        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看\(group.name)")
         isAuthenticatingEncryptedSection = false
 
         if didAuthenticate {
@@ -142,12 +167,12 @@ final class CryptaLibrary {
     }
 
     func importFiles(from urls: [URL]) async {
-        let targetSection = selectedSection
+        guard let targetGroup = selectedGroup else { return }
         let candidates = urls.filter { url in
-            targetSection.isImageSection ? CryptaVideoImport.isSupportedImage(url) : CryptaVideoImport.isSupportedVideo(url)
+            targetGroup.mediaType == .image ? CryptaVideoImport.isSupportedImage(url) : CryptaVideoImport.isSupportedVideo(url)
         }
         guard !candidates.isEmpty else {
-            errorMessage = "没有找到可导入的\(targetSection.itemNoun)"
+            errorMessage = "没有找到可导入的\(targetGroup.itemNoun)"
             return
         }
 
@@ -155,15 +180,15 @@ final class CryptaLibrary {
         defer { isImporting = false }
 
         var imported: [CryptaVideo] = []
-        let targetKind = targetSection.libraryKind
+        let targetKind = LibraryKind(rawValue: targetGroup.id)
         for url in candidates {
             do {
                 let store = self.store
                 let video = try await Task.detached(priority: .userInitiated) { () async throws -> CryptaVideo in
-                    if targetSection.isImageSection {
-                        return try await store.importImage(from: url)
+                    if targetGroup.mediaType == .image {
+                        return try await store.importImage(from: url, libraryKind: targetKind)
                     }
-                    return try await store.importVideo(from: url, storageState: .encrypted, libraryKind: targetKind)
+                    return try await store.importVideo(from: url, storageState: .encrypted, libraryKind: targetKind, mediaType: targetGroup.mediaType)
                 }.value
                 imported.append(video)
             } catch {
@@ -176,8 +201,8 @@ final class CryptaLibrary {
         videos.append(contentsOf: imported)
         videos = videos.sortedForDisplay()
         preloadThumbnails(for: imported)
-        showToast("已导入 \(imported.count) 个\(targetSection.itemNoun)")
-        if targetSection.requiresAuthentication {
+        showToast("已导入 \(imported.count) 个\(targetGroup.itemNoun)")
+        if targetGroup.requiresAuthentication {
             playEncryptedVideoAddedSound()
         }
         if let firstImportedID = imported.first?.id {
@@ -191,13 +216,13 @@ final class CryptaLibrary {
     }
 
     func playSelectedVideo() async {
-        guard canAccessSelectedSection else { return }
+        guard canAccessSelectedGroup else { return }
         guard let video = selectedVideo else { return }
         await play(video)
     }
 
     func previewSelectedVideo() async {
-        guard canAccessSelectedSection else { return }
+        guard canAccessSelectedGroup else { return }
         guard let video = selectedVideo else { return }
         guard !isImporting, !isWorking else { return }
 
@@ -225,12 +250,12 @@ final class CryptaLibrary {
     }
 
     func play(_ video: CryptaVideo) async {
-        guard canAccessSelectedSection else { return }
+        guard canAccessSelectedGroup else { return }
         if video.isImage {
             await previewImage(video)
             return
         }
-        if video.libraryKind == .video {
+        if selectedGroup?.requiresAuthentication == false {
             await playInExternalPlayer(video)
             return
         }
@@ -268,7 +293,7 @@ final class CryptaLibrary {
     }
 
     func requestRename(_ video: CryptaVideo) {
-        guard canAccessSelectedSection else { return }
+        guard canAccessSelectedGroup else { return }
         renameRequest = RenameRequest(video: video)
     }
 
@@ -344,7 +369,7 @@ final class CryptaLibrary {
     }
 
     func confirmDeleteVideo(_ video: CryptaVideo) {
-        guard canAccessSelectedSection else { return }
+        guard canAccessSelectedGroup else { return }
         deleteRequest = DeleteRequest(videos: [video])
     }
 
@@ -392,6 +417,61 @@ final class CryptaLibrary {
         let ids = Set(visibleVideos.map(\.id))
         selectedVideoIDs = ids
         primarySelectedVideoID = visibleVideos.first?.id
+    }
+
+    func createGroup(name: String, encryptionLevel: EncryptionLevel, mediaType: MediaType) async {
+        let group = LibraryGroup(name: name, encryptionLevel: encryptionLevel, mediaType: mediaType)
+        do {
+            try store.createGroup(group)
+            groups.append(group)
+            groups.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if selectedGroupID == nil {
+                selectedGroupID = group.id
+            }
+            showToast("已创建保险箱")
+        } catch {
+            showToast("创建保险箱失败", kind: .error)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func renameGroup(_ request: EditGroupRequest, to newName: String) async {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try store.renameGroup(id: request.group.id, to: trimmed)
+            if let index = groups.firstIndex(where: { $0.id == request.group.id }) {
+                groups[index].name = trimmed
+            }
+            groups.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            editGroupRequest = nil
+            showToast("已重命名")
+        } catch {
+            showToast("重命名失败", kind: .error)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteGroup(_ group: LibraryGroup) async {
+        guard !videos.contains(where: { $0.libraryKind.rawValue == group.id }) else {
+            showToast("保险箱内仍有文件，无法删除", kind: .error)
+            return
+        }
+        do {
+            try store.deleteGroup(id: group.id)
+            groups.removeAll { $0.id == group.id }
+            if selectedGroupID == group.id {
+                selectedGroupID = groups.first?.id
+            }
+            showToast("已删除保险箱")
+        } catch {
+            showToast("删除保险箱失败", kind: .error)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func requestEditGroup(_ group: LibraryGroup) {
+        editGroupRequest = EditGroupRequest(group: group)
     }
 
     private func delete(_ video: CryptaVideo) async {
@@ -459,7 +539,7 @@ final class CryptaLibrary {
     }
 
     private func normalizePrimarySelection() {
-        guard canAccessSelectedSection else {
+        guard canAccessSelectedGroup else {
             primarySelectedVideoID = nil
             return
         }
