@@ -16,7 +16,7 @@ struct DataSafetyTests {
         try await testMkvThumbnailUsesMiddleFrame()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
-        try await testPlaybackCacheCleanupRemovesCrashLeftovers()
+        try await testCryptaCacheCleanupRemovesCrashLeftovers()
         try await testExportDecryptRemovesVideoFromVaultAfterIndexSave()
         try await testExportDecryptUsesUniqueDestinationName()
         try await testFailedExportKeepsEncryptedBlobAndIndexEntry()
@@ -355,7 +355,7 @@ struct DataSafetyTests {
         }
     }
 
-    private static func testPlaybackCacheCleanupRemovesCrashLeftovers() async throws {
+    private static func testCryptaCacheCleanupRemovesCrashLeftovers() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
 
@@ -363,9 +363,9 @@ struct DataSafetyTests {
         try FileManager.default.createDirectory(at: leftoverDirectory, withIntermediateDirectories: true)
         try Data("plaintext".utf8).write(to: leftoverDirectory.appendingPathComponent("video.mp4"))
 
-        try harness.locations.cleanPlaybackCache()
+        try harness.locations.cleanCryptaCache()
         let isEmpty = (try? FileManager.default.contentsOfDirectory(atPath: harness.locations.playbackCache.path).isEmpty) ?? true
-        try expect(isEmpty, "Playback cache cleanup left plaintext files behind.")
+        try expect(isEmpty, "Crypta cache cleanup left plaintext files behind.")
     }
 
     private static func testExportDecryptRemovesVideoFromVaultAfterIndexSave() async throws {

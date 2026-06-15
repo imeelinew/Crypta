@@ -9,6 +9,7 @@ nonisolated struct CryptaStorageLocations: Sendable {
     let moviesVault: URL
     let applicationSupport: URL
     let playbackCache: URL
+    let imageGroupCache: URL
 
     var encryptedIndex: URL {
         vaultPackage.appendingPathComponent("library.index", isDirectory: false)
@@ -25,13 +26,16 @@ nonisolated struct CryptaStorageLocations: Sendable {
     static var live: CryptaStorageLocations {
         let moviesDirectory = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
         let vaultPackage = moviesDirectory.appendingPathComponent("Crypta.vault", isDirectory: true)
+        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Crypta", isDirectory: true)
         return CryptaStorageLocations(
             vaultPackage: vaultPackage,
             moviesVault: vaultPackage.appendingPathComponent("Objects", isDirectory: true),
             applicationSupport: vaultPackage,
-            playbackCache: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Crypta", isDirectory: true)
-                .appendingPathComponent("Playback", isDirectory: true)
+            playbackCache: cachesDirectory
+                .appendingPathComponent("Playback", isDirectory: true),
+            imageGroupCache: cachesDirectory
+                .appendingPathComponent("ImageGroupCache", isDirectory: true)
         )
     }
 
@@ -40,12 +44,14 @@ nonisolated struct CryptaStorageLocations: Sendable {
         try FileManager.default.createDirectory(at: moviesVault, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: thumbnailCache, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: playbackCache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: imageGroupCache, withIntermediateDirectories: true)
     }
 
-    func cleanPlaybackCache() throws {
+    func cleanCryptaCache() throws {
         let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: playbackCache.path) else { return }
-        for url in try fileManager.contentsOfDirectory(at: playbackCache, includingPropertiesForKeys: nil) {
+        let cacheDirectory = imageGroupCache.deletingLastPathComponent()
+        guard fileManager.fileExists(atPath: cacheDirectory.path) else { return }
+        for url in try fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil) {
             try? fileManager.removeItem(at: url)
         }
     }
@@ -58,13 +64,14 @@ nonisolated enum CryptaPaths {
     static var encryptedIndex: URL { CryptaStorageLocations.live.encryptedIndex }
     static var thumbnailCache: URL { CryptaStorageLocations.live.thumbnailCache }
     static var playbackCache: URL { CryptaStorageLocations.live.playbackCache }
+    static var imageGroupCache: URL { CryptaStorageLocations.live.imageGroupCache }
 
     static func prepareDirectories() throws {
         try CryptaStorageLocations.live.prepareDirectories()
     }
 
-    static func cleanPlaybackCache() throws {
-        try CryptaStorageLocations.live.cleanPlaybackCache()
+    static func cleanCryptaCache() throws {
+        try CryptaStorageLocations.live.cleanCryptaCache()
     }
 }
 
@@ -333,6 +340,52 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             try decryptFile(from: source, to: playbackURL)
             return PlaybackURL(url: playbackURL, cleanupURL: playbackDirectory)
         }
+    }
+
+    func decryptImageGroup(_ groupID: String, videos: [CryptaVideo]) throws -> [CryptaVideo.ID: URL] {
+        try locations.prepareDirectories()
+        let fileManager = FileManager.default
+
+        let cacheDirectory = locations.imageGroupCache.appendingPathComponent(groupID, isDirectory: true)
+        if fileManager.fileExists(atPath: cacheDirectory.path) {
+            try fileManager.removeItem(at: cacheDirectory)
+        }
+        try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+
+        let groupVideos = videos.filter {
+            $0.libraryKind.rawValue == groupID && $0.mediaType == .image
+        }
+
+        var result: [CryptaVideo.ID: URL] = [:]
+        for video in groupVideos {
+            let sourceURL: URL
+            switch video.storageState {
+            case .plain:
+                guard let plainFileName = video.plainFileName else { continue }
+                sourceURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
+            case .encrypted:
+                guard let encryptedFileName = video.encryptedFileName else { continue }
+                sourceURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
+            }
+
+            let destinationFileName = uniqueFileName(
+                displayName: video.displayName,
+                extensionName: video.originalExtension,
+                in: cacheDirectory
+            )
+            let destinationURL = cacheDirectory.appendingPathComponent(destinationFileName, isDirectory: false)
+
+            switch video.storageState {
+            case .plain:
+                try copyFile(from: sourceURL, to: destinationURL)
+            case .encrypted:
+                try decryptFile(from: sourceURL, to: destinationURL)
+            }
+
+            result[video.id] = destinationURL
+        }
+
+        return result
     }
 
     func loadThumbnailData(for video: CryptaVideo) throws -> Data? {
