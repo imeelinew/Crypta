@@ -2,7 +2,7 @@
   "fill" : {
     "linear-gradient" : [
       "display-p3:0.67685,0.44228,0.77838,1.00000",
-      "display-p3:0.18470,0.13535,0.46164,1.00000"
+      "display-p3:0.26272,0.19350,0.67075,1.00000"
     ],
     "orientation" : {
       "start" : {
@@ -19,52 +19,25 @@
     {
       "layers" : [
         {
-          "glass" : true,
-          "hidden" : false,
-          "image-name" : "ChatGPT Image 2026年5月15日 12_54_43.png",
-          "name" : "ChatGPT Image 2026年5月15日 12_54_43",
+          "glass" : false,
+          "image-name" : "signature 3.svg",
+          "name" : "signature 3",
           "position" : {
-            "scale" : 1.2,
+            "scale" : 25,
             "translation-in-points" : [
-              12.515625,
-              10.799999999999898
+              -4.5162499999999,
+              -8.311254069468646
             ]
           }
         }
       ],
       "shadow" : {
         "kind" : "neutral",
-        "opacity" : 0.5
+        "opacity" : 0.6
       },
       "translucency" : {
         "enabled" : true,
-        "value" : 0.5
-      }
-    },
-    {
-      "layers" : [
-        {
-          "glass" : true,
-          "hidden" : true,
-          "image-name" : "Icon-iOS-Default-1024x1024@1x.png",
-          "name" : "Icon-iOS-Default-1024x1024@1x",
-          "opacity" : 0.8,
-          "position" : {
-            "scale" : 0.9,
-            "translation-in-points" : [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
-      },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+        "value" : 0.2
       }
     }
   ],
