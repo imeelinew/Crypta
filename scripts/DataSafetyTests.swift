@@ -4,6 +4,7 @@ import Foundation
 @main
 struct DataSafetyTests {
     static func main() async throws {
+        try testEncryptionLevelPolicies()
         try testVideoSortModes()
         try testLegacyVideosDefaultToSafeLibraryKind()
         try await testMissingKeyDoesNotCreateReplacementWhenIndexExists()
@@ -11,6 +12,7 @@ struct DataSafetyTests {
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
         try await testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected()
+        try await testImagePlaybackDecryptsOnlyRequestedImage()
         try await testMkvThumbnailUsesMiddleFrame()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
@@ -21,6 +23,16 @@ struct DataSafetyTests {
         try await testFailedIndexSaveAfterExportKeepsEncryptedBlobAndIndexEntry()
         try await testExportRejectsVaultInternalDestination()
         print("Data safety tests passed")
+    }
+
+    private static func testEncryptionLevelPolicies() throws {
+        try expect(!EncryptionLevel.standard.requiresAuthentication, "Standard encryption should not authenticate.")
+        try expect(EncryptionLevel.extended.requiresAuthentication, "Extended encryption should authenticate.")
+        try expect(EncryptionLevel.maximum.requiresAuthentication, "Maximum encryption should authenticate.")
+        try expect(!EncryptionLevel.extended.locksOnGroupChange, "Extended encryption should remain unlocked across groups.")
+        try expect(EncryptionLevel.maximum.locksOnGroupChange, "Maximum encryption should lock on group change.")
+        try expect(EncryptionLevel.extended.allowsManualLock, "Extended encryption should allow manual locking.")
+        try expect(!EncryptionLevel.maximum.allowsManualLock, "Maximum encryption should not offer manual locking.")
     }
 
     private static func testVideoSortModes() throws {
@@ -233,6 +245,46 @@ struct DataSafetyTests {
             try Data(contentsOf: thumbnailBlob) != decryptedThumbnail,
             "Thumbnail cache stored plaintext image data."
         )
+    }
+
+    private static func testImagePlaybackDecryptsOnlyRequestedImage() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let firstData = try samplePNGData()
+        var secondData = firstData
+        secondData.append(Data("second-image".utf8))
+        let firstSource = harness.root.appendingPathComponent("First.png", isDirectory: false)
+        let secondSource = harness.root.appendingPathComponent("Second.png", isDirectory: false)
+        try firstData.write(to: firstSource)
+        try secondData.write(to: secondSource)
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let firstImage = try await store.importImage(from: firstSource)
+        let secondImage = try await store.importImage(from: secondSource)
+
+        let playback = try store.preparePlaybackURL(for: firstImage)
+        defer {
+            if let cleanupURL = playback.cleanupURL {
+                try? FileManager.default.removeItem(at: cleanupURL)
+            }
+        }
+
+        try expect(try Data(contentsOf: playback.url) == firstData, "Requested image was not decrypted correctly.")
+        guard let cleanupURL = playback.cleanupURL else {
+            throw TestFailure("Encrypted image playback did not create a cleanup directory.")
+        }
+        let files = try FileManager.default.contentsOfDirectory(
+            at: cleanupURL,
+            includingPropertiesForKeys: nil
+        )
+        try expect(files.count == 1, "Opening one image decrypted additional files.")
+        guard let secondEncryptedFileName = secondImage.encryptedFileName else {
+            throw TestFailure("Second image did not retain its encrypted blob.")
+        }
+        let secondBlob = harness.locations.moviesVault.appendingPathComponent(secondEncryptedFileName)
+        try expect(FileManager.default.fileExists(atPath: secondBlob.path), "Second image blob was removed.")
+        try expect(try Data(contentsOf: secondBlob) != secondData, "Second image was left as plaintext.")
     }
 
     private static func testMkvThumbnailUsesMiddleFrame() async throws {

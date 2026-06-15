@@ -21,8 +21,14 @@ struct CryptaTests {
     @Test func encryptedGroupRequiresAuthentication() {
         let standardGroup = LibraryGroup(name: "标准", encryptionLevel: .standard, mediaType: .video)
         let extendedGroup = LibraryGroup(name: "扩展", encryptionLevel: .extended, mediaType: .video)
+        let maximumGroup = LibraryGroup(name: "最高", encryptionLevel: .maximum, mediaType: .video)
         #expect(!standardGroup.requiresAuthentication)
         #expect(extendedGroup.requiresAuthentication)
+        #expect(maximumGroup.requiresAuthentication)
+        #expect(!extendedGroup.encryptionLevel.locksOnGroupChange)
+        #expect(maximumGroup.encryptionLevel.locksOnGroupChange)
+        #expect(extendedGroup.encryptionLevel.allowsManualLock)
+        #expect(!maximumGroup.encryptionLevel.allowsManualLock)
     }
 
     @Test func vaultLivesInMoviesFolder() async throws {

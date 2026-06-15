@@ -8,17 +8,26 @@ struct SidebarView: View {
         List(selection: groupSelection) {
             ForEach(library.groups) { group in
                 NavigationLink(value: group.id) {
-                    Label(group.name, systemImage: group.systemImage)
+                    SidebarGroupLabel(
+                        group: group,
+                        isUnlocked: library.isGroupUnlocked(group)
+                    )
                 }
                 .listRowBackground(Color.clear)
                 .contextMenu {
+                    if library.canManuallyLock(group) {
+                        Button("上锁", systemImage: "lock.fill") {
+                            library.manuallyLock(group)
+                        }
+                        Divider()
+                    }
                     Button("重命名") {
                         library.requestEditGroup(group)
                     }
                     Button("删除") {
                         Task { await library.deleteGroup(group) }
                     }
-                    .disabled(!library.canDeleteSelectedGroup)
+                    .disabled(!library.canDeleteGroup(group))
                 }
             }
             .onMove { source, destination in
@@ -201,6 +210,41 @@ private struct VideoSortPopup: NSViewRepresentable {
     }
 }
 
+private struct SidebarGroupLabel: View {
+    let group: LibraryGroup
+    let isUnlocked: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(group.name, systemImage: group.systemImage)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            if let statusIcon {
+                Image(systemName: statusIcon.systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(.secondary)
+                    .scaleEffect(statusIcon.scale)
+                    .frame(width: 16, height: 16, alignment: .center)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var statusIcon: (systemImage: String, scale: CGFloat)? {
+        switch group.encryptionLevel {
+        case .standard:
+            return nil
+        case .extended:
+            return (isUnlocked ? "lock.open.fill" : "lock.fill", 1)
+        case .maximum:
+            return (isUnlocked ? "lock.open.fill" : "lock.square.fill", isUnlocked ? 1 : 0.84)
+        }
+    }
+}
+
 private struct LockedEncryptedSectionView: View {
     let group: LibraryGroup
     let isAuthenticating: Bool
@@ -215,13 +259,20 @@ private struct LockedEncryptedSectionView: View {
             Text("已加密")
                 .font(.title3.weight(.semibold))
 
-            Button(isAuthenticating ? "正在验证" : "解锁\(group.itemNoun)") {
+            Button(buttonTitle) {
                 unlock()
             }
             .disabled(isAuthenticating)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
+    }
+
+    private var buttonTitle: String {
+        if isAuthenticating {
+            return "正在验证"
+        }
+        return "解锁\(group.itemNoun)"
     }
 }
 

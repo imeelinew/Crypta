@@ -26,14 +26,17 @@ final class CryptaLibrary {
     private(set) var isImporting = false
     private(set) var isWorking = false
     private(set) var isAuthenticatingEncryptedSection = false
-    private(set) var encryptedSectionUnlocked = false
+    private(set) var unlockedGroupIDs: Set<String> = []
     var errorMessage: String?
 
     private let store = CryptaStore()
     private var playerWindowController: PlayerWindowController?
+    private var playerGroupID: String?
     private var quickLookPreviewController = QuickLookPreviewController()
+    private var quickLookGroupID: String?
+    private var extendedLockTask: Task<Void, Never>?
     private var playbackPositionSaveTasks: [CryptaVideo.ID: Task<Void, Never>] = [:]
-    private var externalPlaybackCleanupURLs: Set<URL> = []
+    private var externalPlaybackCleanupGroups: [URL: String] = [:]
     private var externalPlayerTerminationObserver: NSObjectProtocol?
 
     init() {
@@ -76,12 +79,7 @@ final class CryptaLibrary {
 
     var canAccessSelectedGroup: Bool {
         guard let group = selectedGroup else { return false }
-        return !group.requiresAuthentication || encryptedSectionUnlocked
-    }
-
-    var canDeleteSelectedGroup: Bool {
-        guard let group = selectedGroup else { return false }
-        return !videos.contains(where: { $0.libraryKind.rawValue == group.id })
+        return canAccess(group)
     }
 
     var selectedVideo: CryptaVideo? {
@@ -122,48 +120,82 @@ final class CryptaLibrary {
 
     func selectGroup(_ group: LibraryGroup) async {
         guard group.id != selectedGroupID else { return }
-        selectedGroupID = group.id
-        if group.requiresAuthentication {
-            encryptedSectionUnlocked = false
+        if let previousGroup = selectedGroup, previousGroup.encryptionLevel.locksOnGroupChange {
+            lockGroupAccess(previousGroup.id)
         }
+        selectedGroupID = group.id
     }
 
     func unlockEncryptedSection() async {
-        guard !encryptedSectionUnlocked, !isAuthenticatingEncryptedSection else { return }
         guard let group = selectedGroup else { return }
-        isAuthenticatingEncryptedSection = true
-        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看\(group.name)")
-        isAuthenticatingEncryptedSection = false
+        await unlock(group)
+    }
 
-        if didAuthenticate {
-            encryptedSectionUnlocked = true
-            playerWindowController?.setProtected(false)
-            selectFirstVideoIfNeeded()
-        } else {
+    private func unlock(_ group: LibraryGroup) async {
+        guard group.requiresAuthentication,
+              !unlockedGroupIDs.contains(group.id),
+              !isAuthenticatingEncryptedSection else {
+            return
+        }
+
+        isAuthenticatingEncryptedSection = true
+        defer { isAuthenticatingEncryptedSection = false }
+        let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看\(group.name)")
+
+        guard didAuthenticate else {
             showToast("认证未通过", kind: .error)
+            return
+        }
+
+        unlockedGroupIDs.insert(group.id)
+        if group.encryptionLevel == .extended, !NSApp.isActive {
+            scheduleExtendedLock()
+        }
+        if group.encryptionLevel == .maximum, !NSApp.isActive {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let self,
+                      !NSApp.isActive,
+                      unlockedGroupIDs.contains(group.id) else {
+                    return
+                }
+                lockGroupAccess(group.id)
+            }
+        }
+        if playerGroupID == group.id {
+            playerWindowController?.setProtected(false)
+        }
+        if selectedGroupID == group.id {
+            selectFirstVideoIfNeeded()
         }
     }
 
-    func lockEncryptedSectionAccess() {
-        guard encryptedSectionUnlocked else { return }
-        encryptedSectionUnlocked = false
-        renameRequest = nil
-        deleteRequest = nil
-        quickLookPreviewController.close()
-        playerWindowController?.setProtected(true)
-        VideoThumbnailLoader.clearMemoryCache()
+    func appDidResignActive() {
+        guard !isAuthenticatingEncryptedSection else { return }
+        lockGroups { $0.encryptionLevel.locksWhenAppResignsActive }
+        scheduleExtendedLock()
     }
 
-    func resetEncryptedSectionAccess() {
-        encryptedSectionUnlocked = false
-        selectedVideoIDs.removeAll()
-        primarySelectedVideoID = nil
-        renameRequest = nil
-        deleteRequest = nil
-        quickLookPreviewController.close()
-        playerWindowController?.close()
-        cleanupExternalPlaybackFiles()
-        VideoThumbnailLoader.clearMemoryCache()
+    func appDidBecomeActive() {
+        extendedLockTask?.cancel()
+        extendedLockTask = nil
+    }
+
+    func isGroupUnlocked(_ group: LibraryGroup) -> Bool {
+        canAccess(group)
+    }
+
+    func canDeleteGroup(_ group: LibraryGroup) -> Bool {
+        !videos.contains(where: { $0.libraryKind.rawValue == group.id })
+    }
+
+    func canManuallyLock(_ group: LibraryGroup) -> Bool {
+        group.encryptionLevel.allowsManualLock && unlockedGroupIDs.contains(group.id)
+    }
+
+    func manuallyLock(_ group: LibraryGroup) {
+        guard canManuallyLock(group) else { return }
+        lockGroupAccess(group.id)
     }
 
     func importFiles(from urls: [URL]) async {
@@ -228,11 +260,12 @@ final class CryptaLibrary {
 
         if quickLookPreviewController.isPreviewing(video) {
             quickLookPreviewController.close()
+            quickLookGroupID = nil
             return
         }
 
         if video.isImage {
-            await previewImage(video)
+            await openImage(video)
             return
         }
 
@@ -244,6 +277,7 @@ final class CryptaLibrary {
                 throw CryptaError.thumbnailFailed
             }
             try quickLookPreviewController.togglePreview(for: video, thumbnail: thumbnail)
+            quickLookGroupID = video.libraryKind.rawValue
         } catch {
             errorMessage = "预览失败：\(error.localizedDescription)"
         }
@@ -252,7 +286,7 @@ final class CryptaLibrary {
     func play(_ video: CryptaVideo) async {
         guard canAccessSelectedGroup else { return }
         if video.isImage {
-            await previewImage(video)
+            await openImage(video)
             return
         }
         if selectedGroup?.requiresAuthentication == false {
@@ -265,6 +299,7 @@ final class CryptaLibrary {
             defer { isWorking = false }
 
             let store = self.store
+            guard let group = selectedGroup else { return }
             let playback = try await Task.detached(priority: .userInitiated) {
                 try store.preparePlaybackURL(for: video)
             }.value
@@ -278,14 +313,16 @@ final class CryptaLibrary {
                     self?.savePlaybackPosition(for: video, seconds: seconds)
                 },
                 unlock: { [weak self] in
-                    Task { await self?.unlockEncryptedSection() }
+                    Task { await self?.unlock(group) }
                 },
                 onClose: { [weak self] in
                     self?.playerWindowController = nil
+                    self?.playerGroupID = nil
                     VideoThumbnailLoader.clearMemoryCache()
                 }
             )
             self.playerWindowController = playerWindowController
+            playerGroupID = group.id
             playerWindowController.show()
         } catch {
             errorMessage = "播放失败：\(error.localizedDescription)"
@@ -328,7 +365,6 @@ final class CryptaLibrary {
         let targets = selectedVideos.filter { $0.storageState == .encrypted }
         guard !targets.isEmpty else { return }
         let itemNoun = targets.first?.isImage == true ? "图片" : "视频"
-
         isWorking = true
         defer { isWorking = false }
 
@@ -340,6 +376,7 @@ final class CryptaLibrary {
             do {
                 if quickLookPreviewController.isPreviewing(video) {
                     quickLookPreviewController.close()
+                    quickLookGroupID = nil
                 }
                 _ = try await Task.detached(priority: .userInitiated) {
                     try store.exportAndRemoveDecryptedVideo(video, to: destinationDirectory)
@@ -359,7 +396,6 @@ final class CryptaLibrary {
             }
             selectFirstVideoIfNeeded()
         }
-
         if failedCount > 0 {
             showToast("已解密 \(succeeded.count) 个，失败 \(failedCount) 个", kind: .error)
             errorMessage = "有 \(failedCount) 个\(itemNoun)解密失败，失败项仍保留在加密库中。"
@@ -381,6 +417,7 @@ final class CryptaLibrary {
             do {
                 if quickLookPreviewController.isPreviewing(video) {
                     quickLookPreviewController.close()
+                    quickLookGroupID = nil
                 }
                 try store.delete(video)
                 deleted.append(video)
@@ -399,7 +436,6 @@ final class CryptaLibrary {
             deleteRequest = nil
             selectFirstVideoIfNeeded()
         }
-
         if failedCount > 0 {
             showToast("已删除 \(deleted.count) 个，失败 \(failedCount) 个", kind: .error)
             errorMessage = "有 \(failedCount) 个\(itemNoun)删除失败。"
@@ -457,6 +493,7 @@ final class CryptaLibrary {
         }
         do {
             try store.deleteGroup(id: group.id)
+            lockGroupAccess(group.id)
             groups.removeAll { $0.id == group.id }
             if selectedGroupID == group.id {
                 selectedGroupID = groups.first?.id
@@ -490,6 +527,7 @@ final class CryptaLibrary {
         do {
             if quickLookPreviewController.isPreviewing(video) {
                 quickLookPreviewController.close()
+                quickLookGroupID = nil
             }
             try store.delete(video)
             VideoThumbnailLoader.removeCachedThumbnail(for: video)
@@ -581,13 +619,13 @@ final class CryptaLibrary {
             }.value
             if let cleanupURL = playback.cleanupURL {
                 pendingCleanupURL = cleanupURL
-                externalPlaybackCleanupURLs.insert(cleanupURL)
+                externalPlaybackCleanupGroups[cleanupURL] = video.libraryKind.rawValue
             }
             try await openInIINA(playback.url)
             showToast("已交给 IINA 播放")
         } catch {
             if let pendingCleanupURL {
-                externalPlaybackCleanupURLs.remove(pendingCleanupURL)
+                externalPlaybackCleanupGroups.removeValue(forKey: pendingCleanupURL)
                 try? FileManager.default.removeItem(at: pendingCleanupURL)
             }
             showToast("播放失败", kind: .error)
@@ -595,12 +633,8 @@ final class CryptaLibrary {
         }
     }
 
-    private func previewImage(_ video: CryptaVideo) async {
-        if quickLookPreviewController.isPreviewing(video) {
-            quickLookPreviewController.close()
-            return
-        }
-
+    private func openImage(_ video: CryptaVideo) async {
+        var pendingCleanupURL: URL?
         do {
             isWorking = true
             defer { isWorking = false }
@@ -609,13 +643,19 @@ final class CryptaLibrary {
             let playback = try await Task.detached(priority: .userInitiated) {
                 try store.preparePlaybackURL(for: video)
             }.value
-            try quickLookPreviewController.togglePreview(
-                for: video,
-                fileURL: playback.url,
-                cleanupURL: playback.cleanupURL
-            )
+            if let cleanupURL = playback.cleanupURL {
+                pendingCleanupURL = cleanupURL
+                externalPlaybackCleanupGroups[cleanupURL] = video.libraryKind.rawValue
+            }
+            try await openInIINA(playback.url)
+            showToast("已交给 IINA 打开")
         } catch {
-            errorMessage = "预览失败：\(error.localizedDescription)"
+            if let pendingCleanupURL {
+                externalPlaybackCleanupGroups.removeValue(forKey: pendingCleanupURL)
+                try? FileManager.default.removeItem(at: pendingCleanupURL)
+            }
+            showToast("打开失败", kind: .error)
+            errorMessage = "打开失败：\(error.localizedDescription)"
         }
     }
 
@@ -649,10 +689,69 @@ final class CryptaLibrary {
     }
 
     private func cleanupExternalPlaybackFiles() {
-        for url in externalPlaybackCleanupURLs {
+        for url in externalPlaybackCleanupGroups.keys {
             try? FileManager.default.removeItem(at: url)
         }
-        externalPlaybackCleanupURLs.removeAll()
+        externalPlaybackCleanupGroups.removeAll()
+    }
+
+    private func cleanupExternalPlaybackFiles(for groupID: String) {
+        let urls = externalPlaybackCleanupGroups.compactMap { url, ownerGroupID in
+            ownerGroupID == groupID ? url : nil
+        }
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+            externalPlaybackCleanupGroups.removeValue(forKey: url)
+        }
+    }
+
+    private func canAccess(_ group: LibraryGroup) -> Bool {
+        !group.requiresAuthentication || unlockedGroupIDs.contains(group.id)
+    }
+
+    private func lockGroupAccess(_ groupID: String) {
+        unlockedGroupIDs.remove(groupID)
+
+        if selectedGroupID == groupID {
+            renameRequest = nil
+            deleteRequest = nil
+            selectFirstVideoIfNeeded()
+        }
+        if quickLookGroupID == groupID {
+            quickLookPreviewController.close()
+            quickLookGroupID = nil
+        }
+        if playerGroupID == groupID {
+            playerWindowController?.setProtected(true)
+        }
+        cleanupExternalPlaybackFiles(for: groupID)
+        VideoThumbnailLoader.clearMemoryCache()
+    }
+
+    private func lockGroups(where shouldLock: (LibraryGroup) -> Bool) {
+        let groupIDs = groups
+            .filter { unlockedGroupIDs.contains($0.id) && shouldLock($0) }
+            .map(\.id)
+        for groupID in groupIDs {
+            lockGroupAccess(groupID)
+        }
+    }
+
+    private func scheduleExtendedLock() {
+        extendedLockTask?.cancel()
+        guard groups.contains(where: {
+            $0.encryptionLevel == .extended && unlockedGroupIDs.contains($0.id)
+        }) else {
+            extendedLockTask = nil
+            return
+        }
+
+        extendedLockTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(180))
+            guard !Task.isCancelled, let self else { return }
+            lockGroups { $0.encryptionLevel == .extended }
+            extendedLockTask = nil
+        }
     }
 
     private func preloadThumbnails(for videos: [CryptaVideo]) {

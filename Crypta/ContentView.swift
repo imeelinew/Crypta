@@ -71,13 +71,14 @@ struct ContentView: View {
                 .frame(width: 0, height: 0)
             WindowBackgroundBlur(materialAlpha: 1.0)
                 .ignoresSafeArea()
-            MainWindowCloseObserver {
-                library.resetEncryptedSectionAccess()
-            }
-            .frame(width: 0, height: 0)
-            AppFocusObserver {
-                library.lockEncryptedSectionAccess()
-            }
+            AppFocusObserver(
+                onResignActive: {
+                    library.appDidResignActive()
+                },
+                onBecomeActive: {
+                    library.appDidBecomeActive()
+                }
+            )
             .frame(width: 0, height: 0)
         }
         .task(id: library.toast) {
@@ -203,9 +204,13 @@ private extension CryptaToast {
 
 private struct AppFocusObserver: NSViewRepresentable {
     let onResignActive: () -> Void
+    let onBecomeActive: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onResignActive: onResignActive)
+        Coordinator(
+            onResignActive: onResignActive,
+            onBecomeActive: onBecomeActive
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -215,16 +220,22 @@ private struct AppFocusObserver: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         context.coordinator.onResignActive = onResignActive
+        context.coordinator.onBecomeActive = onBecomeActive
         context.coordinator.startObserving()
     }
 
     @MainActor
     final class Coordinator: NSObject {
         var onResignActive: () -> Void
+        var onBecomeActive: () -> Void
         private var isObserving = false
 
-        init(onResignActive: @escaping () -> Void) {
+        init(
+            onResignActive: @escaping () -> Void,
+            onBecomeActive: @escaping () -> Void
+        ) {
             self.onResignActive = onResignActive
+            self.onBecomeActive = onBecomeActive
             super.init()
         }
 
@@ -237,70 +248,20 @@ private struct AppFocusObserver: NSViewRepresentable {
                 name: NSApplication.didResignActiveNotification,
                 object: NSApp
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(appDidBecomeActive(_:)),
+                name: NSApplication.didBecomeActiveNotification,
+                object: NSApp
+            )
         }
 
         @objc private func appDidResignActive(_ notification: Notification) {
             onResignActive()
         }
 
-        deinit {
-            NotificationCenter.default.removeObserver(self)
-        }
-    }
-}
-
-private struct MainWindowCloseObserver: NSViewRepresentable {
-    let onClose: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onClose: onClose)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            context.coordinator.attach(to: view.window)
-        }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        context.coordinator.onClose = onClose
-        DispatchQueue.main.async {
-            context.coordinator.attach(to: view.window)
-        }
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        var onClose: () -> Void
-        private weak var observedWindow: NSWindow?
-
-        init(onClose: @escaping () -> Void) {
-            self.onClose = onClose
-            super.init()
-        }
-
-        func attach(to window: NSWindow?) {
-            guard let window, observedWindow !== window else { return }
-            if let observedWindow {
-                NotificationCenter.default.removeObserver(
-                    self,
-                    name: NSWindow.willCloseNotification,
-                    object: observedWindow
-                )
-            }
-            observedWindow = window
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(windowWillClose(_:)),
-                name: NSWindow.willCloseNotification,
-                object: window
-            )
-        }
-
-        @objc private func windowWillClose(_ notification: Notification) {
-            onClose()
+        @objc private func appDidBecomeActive(_ notification: Notification) {
+            onBecomeActive()
         }
 
         deinit {

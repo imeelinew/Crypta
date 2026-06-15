@@ -14,6 +14,7 @@ nonisolated struct LibraryKind: RawRepresentable, Codable, Hashable, Sendable, E
 nonisolated enum EncryptionLevel: String, Codable, Sendable, CaseIterable, Identifiable {
     case standard
     case extended
+    case maximum
 
     var id: String { rawValue }
 
@@ -21,7 +22,24 @@ nonisolated enum EncryptionLevel: String, Codable, Sendable, CaseIterable, Ident
         switch self {
         case .standard: return "标准加密"
         case .extended: return "扩展加密"
+        case .maximum: return "最高加密"
         }
+    }
+
+    var requiresAuthentication: Bool {
+        self != .standard
+    }
+
+    var locksOnGroupChange: Bool {
+        self == .maximum
+    }
+
+    var locksWhenAppResignsActive: Bool {
+        self == .maximum
+    }
+
+    var allowsManualLock: Bool {
+        self == .extended
     }
 }
 
@@ -66,7 +84,7 @@ nonisolated struct LibraryGroup: Codable, Identifiable, Sendable {
     var encryptionLevel: EncryptionLevel
     var mediaType: MediaType
 
-    var requiresAuthentication: Bool { encryptionLevel == .extended }
+    var requiresAuthentication: Bool { encryptionLevel.requiresAuthentication }
     var systemImage: String { mediaType.systemImage }
     var itemNoun: String { mediaType.itemNoun }
 

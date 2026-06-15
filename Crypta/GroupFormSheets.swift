@@ -59,7 +59,7 @@ struct NewGroupSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 360)
+        .frame(width: 420)
     }
 }
 
