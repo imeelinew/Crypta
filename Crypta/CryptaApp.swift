@@ -37,11 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         guard !CryptaRuntime.isRunningTests else { return }
-        try? CryptaPaths.cleanCryptaCache()
+        try? DecryptedMediaSessionManager.shared.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         guard !CryptaRuntime.isRunningTests else { return }
-        try? CryptaPaths.cleanCryptaCache()
+        DecryptedMediaSessionManager.shared.shutdown()
     }
 }

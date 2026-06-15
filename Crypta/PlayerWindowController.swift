@@ -5,7 +5,7 @@ import AVKit
 final class PlayerWindowController: NSObject, NSWindowDelegate {
     private var player: AVPlayer?
     private let title: String
-    private let cleanupURL: URL?
+    private var mediaLease: DecryptedMediaLease?
     private let startTimeSeconds: Double
     private let onProgress: @MainActor (Double) -> Void
     private let unlock: @MainActor () -> Void
@@ -20,14 +20,14 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     init(
         title: String,
         url: URL,
-        cleanupURL: URL?,
+        mediaLease: DecryptedMediaLease,
         startTimeSeconds: Double,
         onProgress: @escaping @MainActor (Double) -> Void,
         unlock: @escaping @MainActor () -> Void,
         onClose: @escaping @MainActor () -> Void
     ) {
         self.title = title
-        self.cleanupURL = cleanupURL
+        self.mediaLease = mediaLease
         self.startTimeSeconds = startTimeSeconds
         self.onProgress = onProgress
         self.unlock = unlock
@@ -142,11 +142,8 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         window?.contentView = nil
         window = nil
 
-        if let cleanupURL {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) {
-                try? FileManager.default.removeItem(at: cleanupURL)
-            }
-        }
+        mediaLease?.release()
+        mediaLease = nil
 
         onClose()
     }

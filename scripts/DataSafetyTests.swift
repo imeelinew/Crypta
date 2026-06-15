@@ -16,7 +16,11 @@ struct DataSafetyTests {
         try await testMkvThumbnailUsesMiddleFrame()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
-        try await testCryptaCacheCleanupRemovesCrashLeftovers()
+        try await testMediaLeaseOwnsTemporaryPlaintext()
+        try await testImageGroupPreparationIsSharedAndLeaseSurvivesInvalidation()
+        try await testMissingImageGroupFileIsRebuilt()
+        try await testStartingAnotherSessionDoesNotDeleteLiveFiles()
+        try await testSessionStartupRemovesOrphanedFiles()
         try await testExportDecryptRemovesVideoFromVaultAfterIndexSave()
         try await testExportDecryptUsesUniqueDestinationName()
         try await testFailedExportKeepsEncryptedBlobAndIndexEntry()
@@ -355,17 +359,140 @@ struct DataSafetyTests {
         }
     }
 
-    private static func testCryptaCacheCleanupRemovesCrashLeftovers() async throws {
+    @MainActor
+    private static func testMediaLeaseOwnsTemporaryPlaintext() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
 
-        let leftoverDirectory = harness.locations.playbackCache.appendingPathComponent("leftover", isDirectory: true)
-        try FileManager.default.createDirectory(at: leftoverDirectory, withIntermediateDirectories: true)
-        try Data("plaintext".utf8).write(to: leftoverDirectory.appendingPathComponent("video.mp4"))
+        let plaintext = Data("leased-video".utf8)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "Leased.mp4", data: plaintext, store: store)
+        let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+        let lease = try await manager.acquireMediaLease(for: video, store: store)
+        let leaseDirectory = lease.url.deletingLastPathComponent()
 
-        try harness.locations.cleanCryptaCache()
-        let isEmpty = (try? FileManager.default.contentsOfDirectory(atPath: harness.locations.playbackCache.path).isEmpty) ?? true
-        try expect(isEmpty, "Crypta cache cleanup left plaintext files behind.")
+        try expect(try Data(contentsOf: lease.url) == plaintext, "Media lease did not expose the requested plaintext.")
+        try expect(FileManager.default.fileExists(atPath: lease.url.path), "Media lease file disappeared while retained.")
+        lease.release()
+        try expect(!FileManager.default.fileExists(atPath: leaseDirectory.path), "Released media lease left plaintext behind.")
+        manager.shutdown()
+    }
+
+    @MainActor
+    private static func testImageGroupPreparationIsSharedAndLeaseSurvivesInvalidation() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let groupID = "image-group"
+        let plaintext = try samplePNGData()
+        let source = harness.root.appendingPathComponent("Shared.png", isDirectory: false)
+        try plaintext.write(to: source)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let image = try await store.importImage(from: source, libraryKind: LibraryKind(rawValue: groupID))
+        let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+
+        async let firstLease = manager.acquireImageLease(for: image, groupVideos: [image], store: store)
+        async let secondLease = manager.acquireImageLease(for: image, groupVideos: [image], store: store)
+        let (first, second) = try await (firstLease, secondLease)
+        let generationDirectory = first.url.deletingLastPathComponent()
+
+        try expect(first.url == second.url, "Concurrent image requests created competing group generations.")
+        manager.invalidateImageGroup(groupID)
+        try expect(
+            FileManager.default.fileExists(atPath: first.url.path),
+            "Invalidating an image group deleted a file still held by a player lease."
+        )
+        first.release()
+        try expect(
+            FileManager.default.fileExists(atPath: second.url.path),
+            "Releasing one of multiple image leases deleted the shared file."
+        )
+        second.release()
+        try expect(
+            !FileManager.default.fileExists(atPath: generationDirectory.path),
+            "The invalidated image generation remained after its final lease was released."
+        )
+        manager.shutdown()
+    }
+
+    @MainActor
+    private static func testMissingImageGroupFileIsRebuilt() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let groupID = "rebuild-group"
+        let plaintext = try samplePNGData()
+        let source = harness.root.appendingPathComponent("Rebuild.png", isDirectory: false)
+        try plaintext.write(to: source)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let image = try await store.importImage(from: source, libraryKind: LibraryKind(rawValue: groupID))
+        let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+
+        let firstLease = try await manager.acquireImageLease(for: image, groupVideos: [image], store: store)
+        let firstURL = firstLease.url
+        firstLease.release()
+        try FileManager.default.removeItem(at: firstURL)
+
+        let rebuiltLease = try await manager.acquireImageLease(for: image, groupVideos: [image], store: store)
+        try expect(
+            try Data(contentsOf: rebuiltLease.url) == plaintext,
+            "A missing image cache file was not rebuilt before opening."
+        )
+        rebuiltLease.release()
+        manager.invalidateImageGroup(groupID)
+        manager.shutdown()
+    }
+
+    @MainActor
+    private static func testStartingAnotherSessionDoesNotDeleteLiveFiles() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = Data("live-session-video".utf8)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "Live.mp4", data: plaintext, store: store)
+        let firstManager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+        let lease = try await firstManager.acquireMediaLease(for: video, store: store)
+
+        let secondManager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+        try secondManager.start()
+        try expect(
+            FileManager.default.fileExists(atPath: lease.url.path),
+            "Starting another Crypta session deleted a live session's plaintext."
+        )
+        secondManager.shutdown()
+        try expect(
+            FileManager.default.fileExists(atPath: lease.url.path),
+            "Stopping another Crypta session deleted a live session's plaintext."
+        )
+
+        lease.release()
+        firstManager.shutdown()
+    }
+
+    @MainActor
+    private static func testSessionStartupRemovesOrphanedFiles() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let orphanDirectory = harness.locations.cacheRoot
+            .appendingPathComponent("Sessions", isDirectory: true)
+            .appendingPathComponent("orphan", isDirectory: true)
+        try FileManager.default.createDirectory(at: orphanDirectory, withIntermediateDirectories: true)
+        try Data("2147483647".utf8).write(
+            to: orphanDirectory.appendingPathComponent("owner.pid", isDirectory: false)
+        )
+        try Data("plaintext".utf8).write(
+            to: orphanDirectory.appendingPathComponent("leftover.mp4", isDirectory: false)
+        )
+
+        let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+        try manager.start()
+        try expect(
+            !FileManager.default.fileExists(atPath: orphanDirectory.path),
+            "Session startup did not remove an orphaned plaintext directory."
+        )
+        manager.shutdown()
     }
 
     private static func testExportDecryptRemovesVideoFromVaultAfterIndexSave() async throws {

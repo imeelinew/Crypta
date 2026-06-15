@@ -9,7 +9,6 @@ nonisolated struct CryptaStorageLocations: Sendable {
     let moviesVault: URL
     let applicationSupport: URL
     let playbackCache: URL
-    let imageGroupCache: URL
 
     var encryptedIndex: URL {
         vaultPackage.appendingPathComponent("library.index", isDirectory: false)
@@ -23,6 +22,10 @@ nonisolated struct CryptaStorageLocations: Sendable {
         vaultPackage.appendingPathComponent("Thumbnails", isDirectory: true)
     }
 
+    var cacheRoot: URL {
+        playbackCache.deletingLastPathComponent()
+    }
+
     static var live: CryptaStorageLocations {
         let moviesDirectory = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
         let vaultPackage = moviesDirectory.appendingPathComponent("Crypta.vault", isDirectory: true)
@@ -33,9 +36,7 @@ nonisolated struct CryptaStorageLocations: Sendable {
             moviesVault: vaultPackage.appendingPathComponent("Objects", isDirectory: true),
             applicationSupport: vaultPackage,
             playbackCache: cachesDirectory
-                .appendingPathComponent("Playback", isDirectory: true),
-            imageGroupCache: cachesDirectory
-                .appendingPathComponent("ImageGroupCache", isDirectory: true)
+                .appendingPathComponent("Playback", isDirectory: true)
         )
     }
 
@@ -44,17 +45,8 @@ nonisolated struct CryptaStorageLocations: Sendable {
         try FileManager.default.createDirectory(at: moviesVault, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: thumbnailCache, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: playbackCache, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: imageGroupCache, withIntermediateDirectories: true)
     }
 
-    func cleanCryptaCache() throws {
-        let fileManager = FileManager.default
-        let cacheDirectory = imageGroupCache.deletingLastPathComponent()
-        guard fileManager.fileExists(atPath: cacheDirectory.path) else { return }
-        for url in try fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil) {
-            try? fileManager.removeItem(at: url)
-        }
-    }
 }
 
 nonisolated enum CryptaPaths {
@@ -64,15 +56,12 @@ nonisolated enum CryptaPaths {
     static var encryptedIndex: URL { CryptaStorageLocations.live.encryptedIndex }
     static var thumbnailCache: URL { CryptaStorageLocations.live.thumbnailCache }
     static var playbackCache: URL { CryptaStorageLocations.live.playbackCache }
-    static var imageGroupCache: URL { CryptaStorageLocations.live.imageGroupCache }
+    static var cacheRoot: URL { CryptaStorageLocations.live.cacheRoot }
 
     static func prepareDirectories() throws {
         try CryptaStorageLocations.live.prepareDirectories()
     }
 
-    static func cleanCryptaCache() throws {
-        try CryptaStorageLocations.live.cleanCryptaCache()
-    }
 }
 
 nonisolated enum CryptaVideoImport {
@@ -342,49 +331,42 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         }
     }
 
-    func decryptImageGroup(_ groupID: String, videos: [CryptaVideo]) throws -> [CryptaVideo.ID: URL] {
+    func materializeMedia(_ video: CryptaVideo, to destinationURL: URL) throws {
         try locations.prepareDirectories()
-        let fileManager = FileManager.default
-
-        let cacheDirectory = locations.imageGroupCache.appendingPathComponent(groupID, isDirectory: true)
-        if fileManager.fileExists(atPath: cacheDirectory.path) {
-            try fileManager.removeItem(at: cacheDirectory)
+        try FileManager.default.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let sourceURL: URL
+        switch video.storageState {
+        case .plain:
+            guard let plainFileName = video.plainFileName else { throw CryptaError.missingVideoFile }
+            sourceURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
+            try copyFile(from: sourceURL, to: destinationURL)
+        case .encrypted:
+            guard let encryptedFileName = video.encryptedFileName else { throw CryptaError.missingVideoFile }
+            sourceURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
+            try decryptFile(from: sourceURL, to: destinationURL)
         }
-        try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+    }
 
-        let groupVideos = videos.filter {
-            $0.libraryKind.rawValue == groupID && $0.mediaType == .image
-        }
-
+    func materializeImageGroup(
+        _ videos: [CryptaVideo],
+        to directoryURL: URL
+    ) throws -> [CryptaVideo.ID: URL] {
+        try locations.prepareDirectories()
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         var result: [CryptaVideo.ID: URL] = [:]
-        for video in groupVideos {
-            let sourceURL: URL
-            switch video.storageState {
-            case .plain:
-                guard let plainFileName = video.plainFileName else { continue }
-                sourceURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
-            case .encrypted:
-                guard let encryptedFileName = video.encryptedFileName else { continue }
-                sourceURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
-            }
-
+        for video in videos where video.mediaType == .image {
             let destinationFileName = uniqueFileName(
                 displayName: video.displayName,
                 extensionName: video.originalExtension,
-                in: cacheDirectory
+                in: directoryURL
             )
-            let destinationURL = cacheDirectory.appendingPathComponent(destinationFileName, isDirectory: false)
-
-            switch video.storageState {
-            case .plain:
-                try copyFile(from: sourceURL, to: destinationURL)
-            case .encrypted:
-                try decryptFile(from: sourceURL, to: destinationURL)
-            }
-
+            let destinationURL = directoryURL.appendingPathComponent(destinationFileName, isDirectory: false)
+            try materializeMedia(video, to: destinationURL)
             result[video.id] = destinationURL
         }
-
         return result
     }
 

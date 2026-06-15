@@ -1,0 +1,320 @@
+import Darwin
+import Foundation
+
+@MainActor
+final class DecryptedMediaLease {
+    let url: URL
+
+    private let id: UUID
+    private weak var manager: DecryptedMediaSessionManager?
+    private var isReleased = false
+
+    fileprivate init(id: UUID, url: URL, manager: DecryptedMediaSessionManager) {
+        self.id = id
+        self.url = url
+        self.manager = manager
+    }
+
+    func release() {
+        guard !isReleased else { return }
+        isReleased = true
+        manager?.releaseLease(id)
+    }
+
+    deinit {
+        guard !isReleased, let manager else { return }
+        let leaseID = id
+        Task { @MainActor in
+            manager.releaseLease(leaseID)
+        }
+    }
+}
+
+@MainActor
+final class DecryptedMediaSessionManager {
+    static let shared = DecryptedMediaSessionManager(cacheRoot: CryptaPaths.cacheRoot)
+
+    private struct Resource {
+        let directoryURL: URL
+        var leaseCount: Int
+        var deleteWhenUnused: Bool
+    }
+
+    private struct ImageGroupSnapshot: Sendable {
+        let resourceID: UUID
+        let fileURLsByVideoID: [CryptaVideo.ID: URL]
+    }
+
+    private struct PreparedImageGroup: Sendable {
+        let directoryURL: URL
+        let fileURLsByVideoID: [CryptaVideo.ID: URL]
+    }
+
+    private let fileManager: FileManager
+    private let sessionsRoot: URL
+    private let sessionID: UUID
+    private let sessionDirectory: URL
+    private var didStart = false
+    private var resources: [UUID: Resource] = [:]
+    private var leaseResourceIDs: [UUID: UUID] = [:]
+    private var imageGroupSnapshots: [String: ImageGroupSnapshot] = [:]
+    private var imageGroupTasks: [String: Task<ImageGroupSnapshot, Error>] = [:]
+    private var imageGroupTaskIDs: [String: UUID] = [:]
+    private var imageGroupVersions: [String: Int] = [:]
+
+    init(cacheRoot: URL, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        sessionsRoot = cacheRoot.appendingPathComponent("Sessions", isDirectory: true)
+        sessionID = UUID()
+        sessionDirectory = sessionsRoot.appendingPathComponent(sessionID.uuidString, isDirectory: true)
+    }
+
+    func start() throws {
+        guard !didStart else { return }
+        try fileManager.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        try cleanupOrphanedSessions()
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        try Data("\(ProcessInfo.processInfo.processIdentifier)".utf8).write(
+            to: sessionDirectory.appendingPathComponent("owner.pid", isDirectory: false),
+            options: [.atomic]
+        )
+        didStart = true
+    }
+
+    func shutdown() {
+        for task in imageGroupTasks.values {
+            task.cancel()
+        }
+        imageGroupTasks.removeAll()
+        imageGroupTaskIDs.removeAll()
+        imageGroupSnapshots.removeAll()
+        resources.removeAll()
+        leaseResourceIDs.removeAll()
+        try? fileManager.removeItem(at: sessionDirectory)
+        didStart = false
+    }
+
+    func acquireMediaLease(for video: CryptaVideo, store: CryptaStore) async throws -> DecryptedMediaLease {
+        try start()
+        let resourceID = UUID()
+        let directoryURL = sessionDirectory
+            .appendingPathComponent("Media", isDirectory: true)
+            .appendingPathComponent(resourceID.uuidString, isDirectory: true)
+        let extensionName = video.originalExtension.isEmpty ? "bin" : video.originalExtension
+        let fileURL = directoryURL.appendingPathComponent("media.\(extensionName)", isDirectory: false)
+
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try store.materializeMedia(video, to: fileURL)
+            }.value
+        } catch {
+            try? fileManager.removeItem(at: directoryURL)
+            throw error
+        }
+
+        resources[resourceID] = Resource(
+            directoryURL: directoryURL,
+            leaseCount: 0,
+            deleteWhenUnused: true
+        )
+        return makeLease(resourceID: resourceID, url: fileURL)
+    }
+
+    func prepareImageGroup(
+        groupID: String,
+        videos: [CryptaVideo],
+        store: CryptaStore
+    ) async throws {
+        _ = try await imageGroupSnapshot(groupID: groupID, videos: videos, store: store)
+    }
+
+    func acquireImageLease(
+        for video: CryptaVideo,
+        groupVideos: [CryptaVideo],
+        store: CryptaStore
+    ) async throws -> DecryptedMediaLease {
+        let groupID = video.libraryKind.rawValue
+
+        for _ in 0..<2 {
+            let snapshot = try await imageGroupSnapshot(
+                groupID: groupID,
+                videos: groupVideos,
+                store: store
+            )
+            if let fileURL = snapshot.fileURLsByVideoID[video.id],
+               fileManager.fileExists(atPath: fileURL.path) {
+                return makeLease(resourceID: snapshot.resourceID, url: fileURL)
+            }
+            invalidateImageGroup(groupID)
+        }
+
+        throw CryptaError.missingVideoFile
+    }
+
+    func invalidateImageGroup(_ groupID: String) {
+        imageGroupVersions[groupID, default: 0] += 1
+        imageGroupTasks.removeValue(forKey: groupID)?.cancel()
+        imageGroupTaskIDs.removeValue(forKey: groupID)
+        guard let snapshot = imageGroupSnapshots.removeValue(forKey: groupID) else { return }
+        discardResourceWhenUnused(snapshot.resourceID)
+    }
+
+    fileprivate func releaseLease(_ leaseID: UUID) {
+        guard let resourceID = leaseResourceIDs.removeValue(forKey: leaseID),
+              var resource = resources[resourceID] else {
+            return
+        }
+        resource.leaseCount = max(0, resource.leaseCount - 1)
+        resources[resourceID] = resource
+        deleteResourceIfUnused(resourceID)
+    }
+
+    private func imageGroupSnapshot(
+        groupID: String,
+        videos: [CryptaVideo],
+        store: CryptaStore
+    ) async throws -> ImageGroupSnapshot {
+        try start()
+
+        if let snapshot = imageGroupSnapshots[groupID],
+           snapshot.fileURLsByVideoID.values.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) {
+            return snapshot
+        }
+        if imageGroupSnapshots[groupID] != nil {
+            invalidateImageGroup(groupID)
+        }
+        if let task = imageGroupTasks[groupID] {
+            return try await task.value
+        }
+
+        let version = imageGroupVersions[groupID, default: 0]
+        let taskID = UUID()
+        let generationID = UUID()
+        let stagingDirectory = sessionDirectory
+            .appendingPathComponent("Staging", isDirectory: true)
+            .appendingPathComponent(generationID.uuidString, isDirectory: true)
+        let finalDirectory = sessionDirectory
+            .appendingPathComponent("ImageGroups", isDirectory: true)
+            .appendingPathComponent(groupID, isDirectory: true)
+            .appendingPathComponent(generationID.uuidString, isDirectory: true)
+
+        let task = Task<ImageGroupSnapshot, Error> { [weak self] in
+            guard let self else { throw CancellationError() }
+
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                let mapping = try store.materializeImageGroup(videos, to: stagingDirectory)
+                try FileManager.default.createDirectory(
+                    at: finalDirectory.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try FileManager.default.moveItem(at: stagingDirectory, to: finalDirectory)
+                let movedMapping = mapping.mapValues {
+                    finalDirectory.appendingPathComponent($0.lastPathComponent, isDirectory: false)
+                }
+                return PreparedImageGroup(
+                    directoryURL: finalDirectory,
+                    fileURLsByVideoID: movedMapping
+                )
+            }.value
+
+            do {
+                try Task.checkCancellation()
+                guard self.imageGroupVersions[groupID, default: 0] == version else {
+                    throw CancellationError()
+                }
+
+                let resourceID = UUID()
+                self.resources[resourceID] = Resource(
+                    directoryURL: prepared.directoryURL,
+                    leaseCount: 0,
+                    deleteWhenUnused: false
+                )
+                let snapshot = ImageGroupSnapshot(
+                    resourceID: resourceID,
+                    fileURLsByVideoID: prepared.fileURLsByVideoID
+                )
+                if let previous = self.imageGroupSnapshots.updateValue(snapshot, forKey: groupID) {
+                    self.discardResourceWhenUnused(previous.resourceID)
+                }
+                return snapshot
+            } catch {
+                try? self.fileManager.removeItem(at: prepared.directoryURL)
+                throw error
+            }
+        }
+        imageGroupTasks[groupID] = task
+        imageGroupTaskIDs[groupID] = taskID
+
+        do {
+            let snapshot = try await task.value
+            if imageGroupTaskIDs[groupID] == taskID {
+                imageGroupTasks.removeValue(forKey: groupID)
+                imageGroupTaskIDs.removeValue(forKey: groupID)
+            }
+            return snapshot
+        } catch {
+            if imageGroupTaskIDs[groupID] == taskID {
+                imageGroupTasks.removeValue(forKey: groupID)
+                imageGroupTaskIDs.removeValue(forKey: groupID)
+            }
+            try? fileManager.removeItem(at: stagingDirectory)
+            try? fileManager.removeItem(at: finalDirectory)
+            throw error
+        }
+    }
+
+    private func makeLease(resourceID: UUID, url: URL) -> DecryptedMediaLease {
+        let leaseID = UUID()
+        if var resource = resources[resourceID] {
+            resource.leaseCount += 1
+            resources[resourceID] = resource
+        }
+        leaseResourceIDs[leaseID] = resourceID
+        return DecryptedMediaLease(id: leaseID, url: url, manager: self)
+    }
+
+    private func discardResourceWhenUnused(_ resourceID: UUID) {
+        guard var resource = resources[resourceID] else { return }
+        resource.deleteWhenUnused = true
+        resources[resourceID] = resource
+        deleteResourceIfUnused(resourceID)
+    }
+
+    private func deleteResourceIfUnused(_ resourceID: UUID) {
+        guard let resource = resources[resourceID],
+              resource.deleteWhenUnused,
+              resource.leaseCount == 0 else {
+            return
+        }
+        resources.removeValue(forKey: resourceID)
+        try? fileManager.removeItem(at: resource.directoryURL)
+    }
+
+    private func cleanupOrphanedSessions() throws {
+        let sessionDirectories = try fileManager.contentsOfDirectory(
+            at: sessionsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        for directory in sessionDirectories where directory != sessionDirectory {
+            let ownerURL = directory.appendingPathComponent("owner.pid", isDirectory: false)
+            guard let data = try? Data(contentsOf: ownerURL),
+                  let value = String(data: data, encoding: .utf8),
+                  let pid = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                try? fileManager.removeItem(at: directory)
+                continue
+            }
+            if !Self.isProcessAlive(pid) {
+                try? fileManager.removeItem(at: directory)
+            }
+        }
+    }
+
+    private static func isProcessAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if Darwin.kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
+    }
+}

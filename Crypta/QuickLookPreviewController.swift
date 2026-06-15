@@ -5,6 +5,7 @@ import QuickLookUI
 final class QuickLookPreviewController: NSObject {
     private var item: QuickLookPreviewItem?
     private var cleanupURL: URL?
+    private var mediaLease: DecryptedMediaLease?
     private var previewedVideoID: CryptaVideo.ID?
     private weak var panel: QLPreviewPanel?
     private var keyMonitor: Any?
@@ -26,20 +27,18 @@ final class QuickLookPreviewController: NSObject {
         try showPreview(for: video, thumbnail: thumbnail)
     }
 
-    func togglePreview(for video: CryptaVideo, fileURL: URL, cleanupURL: URL?) throws {
+    func togglePreview(for video: CryptaVideo, mediaLease: DecryptedMediaLease) throws {
         if isPresented, previewedVideoID == video.id {
-            if let cleanupURL {
-                cleanup(cleanupURL)
-            }
+            mediaLease.release()
             close()
             return
         }
 
-        try showPreview(for: video, fileURL: fileURL, cleanupURL: cleanupURL)
+        try showPreview(for: video, mediaLease: mediaLease)
     }
 
     func close() {
-        guard item != nil || cleanupURL != nil else { return }
+        guard item != nil || cleanupURL != nil || mediaLease != nil else { return }
         panel?.close()
         cleanupCurrentPreview()
         stopMonitoringSpaceKey()
@@ -48,9 +47,11 @@ final class QuickLookPreviewController: NSObject {
 
     private func showPreview(for video: CryptaVideo, thumbnail: NSImage) throws {
         let previousCleanupURL = cleanupURL
+        let previousMediaLease = mediaLease
         let previewURL = try writePreviewImage(thumbnail)
         item = QuickLookPreviewItem(url: previewURL, title: video.displayName)
         cleanupURL = previewURL
+        mediaLease = nil
         previewedVideoID = video.id
 
         let previewPanel = QLPreviewPanel.shared()
@@ -65,12 +66,15 @@ final class QuickLookPreviewController: NSObject {
         if let previousCleanupURL, previousCleanupURL != cleanupURL {
             cleanup(previousCleanupURL)
         }
+        previousMediaLease?.release()
     }
 
-    private func showPreview(for video: CryptaVideo, fileURL: URL, cleanupURL nextCleanupURL: URL?) throws {
+    private func showPreview(for video: CryptaVideo, mediaLease nextMediaLease: DecryptedMediaLease) throws {
         let previousCleanupURL = cleanupURL
-        item = QuickLookPreviewItem(url: fileURL, title: video.displayName)
-        cleanupURL = nextCleanupURL
+        let previousMediaLease = mediaLease
+        item = QuickLookPreviewItem(url: nextMediaLease.url, title: video.displayName)
+        cleanupURL = nil
+        mediaLease = nextMediaLease
         previewedVideoID = video.id
 
         let previewPanel = QLPreviewPanel.shared()
@@ -85,6 +89,7 @@ final class QuickLookPreviewController: NSObject {
         if let previousCleanupURL, previousCleanupURL != cleanupURL {
             cleanup(previousCleanupURL)
         }
+        previousMediaLease?.release()
     }
 
     private func writePreviewImage(_ image: NSImage) throws -> URL {
@@ -105,13 +110,16 @@ final class QuickLookPreviewController: NSObject {
 
     private func cleanupCurrentPreview() {
         let url = cleanupURL
+        let lease = mediaLease
         item = nil
         cleanupURL = nil
+        mediaLease = nil
         previewedVideoID = nil
 
         if let url {
             cleanup(url)
         }
+        lease?.release()
     }
 
     private func cleanup(_ url: URL) {
