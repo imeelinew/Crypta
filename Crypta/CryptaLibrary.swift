@@ -424,7 +424,6 @@ final class CryptaLibrary {
         do {
             try store.createGroup(group)
             groups.append(group)
-            groups.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             if selectedGroupID == nil {
                 selectedGroupID = group.id
             }
@@ -443,7 +442,6 @@ final class CryptaLibrary {
             if let index = groups.firstIndex(where: { $0.id == request.group.id }) {
                 groups[index].name = trimmed
             }
-            groups.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             editGroupRequest = nil
             showToast("已重命名")
         } catch {
@@ -472,6 +470,20 @@ final class CryptaLibrary {
 
     func requestEditGroup(_ group: LibraryGroup) {
         editGroupRequest = EditGroupRequest(group: group)
+    }
+
+    func moveGroups(from source: IndexSet, to destination: Int) {
+        var updated = groups
+        updated.move(fromOffsets: source, toOffset: destination)
+        let previous = groups
+        groups = updated
+        do {
+            try store.saveGroupOrder(updated)
+        } catch {
+            groups = previous
+            showToast("调整顺序失败", kind: .error)
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func delete(_ video: CryptaVideo) async {

@@ -174,6 +174,19 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         try saveIndex(index)
     }
 
+    func saveGroupOrder(_ groups: [LibraryGroup]) throws {
+        var index = try loadIndex()
+        let groupIDs = Set(groups.map(\.id))
+        guard groupIDs.count == groups.count else {
+            throw CryptaError.groupNotFound
+        }
+        guard groupIDs == Set(index.groups.map(\.id)) else {
+            throw CryptaError.groupNotFound
+        }
+        index.groups = groups
+        try saveIndex(index)
+    }
+
     func saveIndex(_ index: CryptaIndex) throws {
         try locations.prepareDirectories()
         let plaintext = try indexEncoder.encode(index)

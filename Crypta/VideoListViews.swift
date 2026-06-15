@@ -7,21 +7,25 @@ struct SidebarView: View {
     var body: some View {
         List(selection: groupSelection) {
             ForEach(library.groups) { group in
-                    NavigationLink(value: group.id) {
-                        Label(group.name, systemImage: group.systemImage)
-                    }
-                    .listRowBackground(Color.clear)
-                    .contextMenu {
-                        Button("重命名") {
-                            library.requestEditGroup(group)
-                        }
-                        Button("删除") {
-                            Task { await library.deleteGroup(group) }
-                        }
-                        .disabled(!library.canDeleteSelectedGroup)
-                    }
+                NavigationLink(value: group.id) {
+                    Label(group.name, systemImage: group.systemImage)
                 }
+                .listRowBackground(Color.clear)
+                .contextMenu {
+                    Button("重命名") {
+                        library.requestEditGroup(group)
+                    }
+                    Button("删除") {
+                        Task { await library.deleteGroup(group) }
+                    }
+                    .disabled(!library.canDeleteSelectedGroup)
+                }
+            }
+            .onMove { source, destination in
+                library.moveGroups(from: source, to: destination)
+            }
         }
+        .listStyle(.sidebar)
         .navigationTitle("Crypta")
         .navigationSplitViewColumnWidth(min: 150, ideal: 180)
         .scrollContentBackground(.hidden)
