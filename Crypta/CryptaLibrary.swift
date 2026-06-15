@@ -264,19 +264,26 @@ final class CryptaLibrary {
             return
         }
 
-        if video.isImage {
-            await openImage(video)
-            return
-        }
-
         do {
             isWorking = true
             defer { isWorking = false }
 
-            guard let thumbnail = await VideoThumbnailLoader.thumbnail(for: video) else {
-                throw CryptaError.thumbnailFailed
+            if video.isImage {
+                let store = self.store
+                let playback = try await Task.detached(priority: .userInitiated) {
+                    try store.preparePlaybackURL(for: video)
+                }.value
+                try quickLookPreviewController.togglePreview(
+                    for: video,
+                    fileURL: playback.url,
+                    cleanupURL: playback.cleanupURL
+                )
+            } else {
+                guard let thumbnail = await VideoThumbnailLoader.thumbnail(for: video) else {
+                    throw CryptaError.thumbnailFailed
+                }
+                try quickLookPreviewController.togglePreview(for: video, thumbnail: thumbnail)
             }
-            try quickLookPreviewController.togglePreview(for: video, thumbnail: thumbnail)
             quickLookGroupID = video.libraryKind.rawValue
         } catch {
             errorMessage = "预览失败：\(error.localizedDescription)"

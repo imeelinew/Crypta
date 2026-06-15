@@ -28,7 +28,9 @@ final class QuickLookPreviewController: NSObject {
 
     func togglePreview(for video: CryptaVideo, fileURL: URL, cleanupURL: URL?) throws {
         if isPresented, previewedVideoID == video.id {
-            cleanup(cleanupURL ?? fileURL)
+            if let cleanupURL {
+                cleanup(cleanupURL)
+            }
             close()
             return
         }
@@ -68,7 +70,7 @@ final class QuickLookPreviewController: NSObject {
     private func showPreview(for video: CryptaVideo, fileURL: URL, cleanupURL nextCleanupURL: URL?) throws {
         let previousCleanupURL = cleanupURL
         item = QuickLookPreviewItem(url: fileURL, title: video.displayName)
-        cleanupURL = nextCleanupURL ?? fileURL
+        cleanupURL = nextCleanupURL
         previewedVideoID = video.id
 
         let previewPanel = QLPreviewPanel.shared()
