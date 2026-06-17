@@ -240,7 +240,7 @@ private struct SidebarGroupLabel: View {
         case .extended:
             return (isUnlocked ? "lock.open.fill" : "lock.fill", 1)
         case .maximum:
-            return (isUnlocked ? "lock.open.fill" : "lock.square.fill", 1)
+            return (isUnlocked ? "lock.open.fill" : "lock.square.fill", isUnlocked ? 1 : 1.3)
         }
     }
 }
