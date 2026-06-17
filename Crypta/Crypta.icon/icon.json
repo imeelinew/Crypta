@@ -19,7 +19,7 @@
     {
       "layers" : [
         {
-          "glass" : false,
+          "glass" : true,
           "image-name" : "signature 3.svg",
           "name" : "signature 3",
           "position" : {

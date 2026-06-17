@@ -46,6 +46,14 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         playerView.controlsStyle = .floating
         playerView.showsFullScreenToggleButton = true
         self.playerView = playerView
+
+        let doubleClickGesture = NSClickGestureRecognizer(
+            target: self,
+            action: #selector(handleDoubleClick(_:))
+        )
+        doubleClickGesture.numberOfClicksRequired = 2
+        playerView.addGestureRecognizer(doubleClickGesture)
+
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 5, preferredTimescale: 600),
@@ -194,6 +202,10 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
     @objc private func unlockButtonClicked(_ sender: NSButton) {
         unlock()
+    }
+
+    @objc private func handleDoubleClick(_ sender: NSClickGestureRecognizer) {
+        window?.toggleFullScreen(nil)
     }
 
     private func reportProgress(_ time: CMTime) {
