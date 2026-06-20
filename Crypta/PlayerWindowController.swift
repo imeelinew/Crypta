@@ -13,8 +13,10 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     private weak var playerView: AVPlayerView?
     private weak var privacyOverlay: NSView?
     private var window: NSWindow?
+    private var keyMonitor: Any?
     private var timeObserver: Any?
     private var shouldResumeAfterProtection = false
+    private var isProtected = false
     private var didClose = false
 
     init(
@@ -99,6 +101,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         self.window = window
+        startMonitoringSeekKeys()
         scheduleContentAspectRatioUpdate()
     }
 
@@ -129,6 +132,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     }
 
     func setProtected(_ isProtected: Bool) {
+        self.isProtected = isProtected
         window?.title = isProtected ? "已锁定" : title
         privacyOverlay?.isHidden = !isProtected
         playerView?.controlsStyle = isProtected ? .none : .floating
@@ -157,6 +161,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     }
 
     private func releasePlaybackResources() {
+        stopMonitoringSeekKeys()
         guard let player else { return }
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
@@ -208,6 +213,63 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         window?.toggleFullScreen(nil)
     }
 
+    private func startMonitoringSeekKeys() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let direction = MainActor.assumeIsolated {
+                self?.seekDirection(for: event)
+            }
+            guard let direction else {
+                return event
+            }
+            MainActor.assumeIsolated {
+                self?.seek(by: direction * Self.seekIntervalSeconds)
+            }
+            return nil
+        }
+    }
+
+    private func stopMonitoringSeekKeys() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    private func seekDirection(for event: NSEvent) -> Double? {
+        guard event.window === window, !isProtected else { return nil }
+        let blockedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        guard event.modifierFlags.intersection(blockedModifiers).isEmpty else { return nil }
+        switch event.keyCode {
+        case Self.leftArrowKeyCode:
+            return -1
+        case Self.rightArrowKeyCode:
+            return 1
+        default:
+            return nil
+        }
+    }
+
+    private func seek(by offsetSeconds: Double) {
+        guard let player else { return }
+        let currentSeconds = player.currentTime().seconds
+        guard currentSeconds.isFinite else { return }
+
+        let durationSeconds = player.currentItem?.duration.seconds
+        let upperBound = durationSeconds?.isFinite == true ? max(durationSeconds ?? 0, 0) : .infinity
+        let targetSeconds = min(max(currentSeconds + offsetSeconds, 0), upperBound)
+        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+        player.seek(
+            to: targetTime,
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.reportProgress(targetTime)
+            }
+        }
+    }
+
     private func reportProgress(_ time: CMTime) {
         guard time.seconds.isFinite, time.seconds >= 0 else { return }
         onProgress(time.seconds)
@@ -246,6 +308,10 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     private static var defaultContentSize: NSSize {
         NSSize(width: 960, height: 540)
     }
+
+    private static let seekIntervalSeconds: Double = 10
+    private static let leftArrowKeyCode: UInt16 = 123
+    private static let rightArrowKeyCode: UInt16 = 124
 
     private static func contentSize(for videoSize: NSSize) -> NSSize {
         let fallbackSize = defaultContentSize
