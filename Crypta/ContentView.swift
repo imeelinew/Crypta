@@ -120,6 +120,16 @@ struct ContentView: View {
                 Text("将从 Crypta 中删除所选 \(request.videos.count) 个\(library.selectedGroup?.itemNoun ?? "文件")。")
             }
         }
+        .alert("重新生成字幕？", isPresented: subtitleOverwriteAlertBinding, presenting: library.subtitleOverwriteRequest) { request in
+            Button("取消", role: .cancel) {
+                library.subtitleOverwriteRequest = nil
+            }
+            Button("覆盖", role: .destructive) {
+                library.confirmRegenerateSubtitles(request)
+            }
+        } message: { request in
+            Text("将覆盖“\(request.video.displayName)”现有字幕。")
+        }
         .alert("出错了", isPresented: errorAlertBinding, presenting: library.errorMessage) { _ in
             Button("好") {
                 library.errorMessage = nil
@@ -133,6 +143,13 @@ struct ContentView: View {
         Binding(
             get: { library.deleteRequest != nil },
             set: { if !$0 { library.deleteRequest = nil } }
+        )
+    }
+
+    private var subtitleOverwriteAlertBinding: Binding<Bool> {
+        Binding(
+            get: { library.subtitleOverwriteRequest != nil },
+            set: { if !$0 { library.subtitleOverwriteRequest = nil } }
         )
     }
 

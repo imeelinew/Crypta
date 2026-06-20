@@ -77,3 +77,7 @@ playground.xcworkspace
 
 # Swift Package Manager
 # Package.resolved
+
+### Crypta local secrets
+subtitle-secrets.env
+*.subtitle-secrets.env

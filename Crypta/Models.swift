@@ -116,6 +116,17 @@ nonisolated struct DeleteRequest: Identifiable {
     }
 }
 
+nonisolated struct SubtitleOverwriteRequest: Identifiable {
+    let id = UUID()
+    let video: CryptaVideo
+}
+
+nonisolated struct SubtitleJobProgress: Sendable, Equatable {
+    let videoID: CryptaVideo.ID
+    let percent: Int
+    let desc: String
+}
+
 nonisolated struct EditGroupRequest: Identifiable {
     let id = UUID()
     let group: LibraryGroup
@@ -211,8 +222,9 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
     var storageState: StorageState
     var plainFileName: String?
     var encryptedFileName: String?
+    var hasEmbeddedSubtitles: Bool
     let importedAt: Date
-    let byteCount: Int64
+    var byteCount: Int64
     let durationSeconds: Double?
     var playbackPositionSeconds: Double?
 
@@ -235,6 +247,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         storageState: StorageState,
         plainFileName: String?,
         encryptedFileName: String?,
+        hasEmbeddedSubtitles: Bool = false,
         importedAt: Date,
         byteCount: Int64,
         durationSeconds: Double?,
@@ -248,6 +261,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         self.storageState = storageState
         self.plainFileName = plainFileName
         self.encryptedFileName = encryptedFileName
+        self.hasEmbeddedSubtitles = hasEmbeddedSubtitles
         self.importedAt = importedAt
         self.byteCount = byteCount
         self.durationSeconds = durationSeconds
@@ -268,6 +282,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         mediaType = try container.decodeIfPresent(MediaType.self, forKey: .mediaType) ?? .video
         plainFileName = try container.decodeIfPresent(String.self, forKey: .plainFileName)
         encryptedFileName = try container.decodeIfPresent(String.self, forKey: .encryptedFileName)
+        hasEmbeddedSubtitles = try container.decodeIfPresent(Bool.self, forKey: .hasEmbeddedSubtitles) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -279,6 +294,7 @@ nonisolated struct CryptaVideo: Codable, Identifiable, Hashable, Sendable {
         case storageState
         case plainFileName
         case encryptedFileName
+        case hasEmbeddedSubtitles
         case importedAt
         case byteCount
         case durationSeconds
@@ -342,6 +358,10 @@ nonisolated enum CryptaError: LocalizedError {
     case invalidExportDestination
     case externalPlayerUnavailable
     case externalPlayerOpenFailed
+    case subtitleConfigurationMissing
+    case subtitleToolUnavailable(String)
+    case subtitleGenerationFailed(String)
+    case subtitleTranslationFailed(String)
     case keychainReadFailed(OSStatus)
     case keychainWriteFailed(OSStatus)
     case groupNotEmpty
@@ -374,6 +394,14 @@ nonisolated enum CryptaError: LocalizedError {
             return "找不到 IINA"
         case .externalPlayerOpenFailed:
             return "无法使用 IINA 播放"
+        case .subtitleConfigurationMissing:
+            return "找不到字幕模型配置"
+        case .subtitleToolUnavailable(let tool):
+            return "找不到字幕依赖：\(tool)"
+        case .subtitleGenerationFailed(let reason):
+            return "字幕生成失败：\(reason)"
+        case .subtitleTranslationFailed(let reason):
+            return "字幕翻译失败：\(reason)"
         case .keychainReadFailed(let status):
             return "无法读取钥匙串密钥（\(status)）"
         case .keychainWriteFailed(let status):

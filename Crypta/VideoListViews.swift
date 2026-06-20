@@ -93,10 +93,19 @@ struct VideoListPage: View {
                         } else {
                             List(selection: $library.selectedVideoIDs) {
                                 ForEach(library.visibleVideos) { video in
-                                    VideoRow(video: video)
+                                    VideoRow(
+                                        video: video,
+                                        subtitleProgress: library.subtitleProgress(for: video)
+                                    )
                                         .tag(video.id)
                                         .listRowBackground(Color.clear)
                                         .contextMenu {
+                                            if library.canGenerateSubtitles(for: video) {
+                                                Button(library.subtitleActionTitle(for: video), systemImage: "captions.bubble") {
+                                                    library.requestGenerateSubtitles(video)
+                                                }
+                                                Divider()
+                                            }
                                             Button("重命名") {
                                                 library.requestRename(video)
                                             }
@@ -462,6 +471,7 @@ private extension NSTableView {
 
 struct VideoRow: View {
     let video: CryptaVideo
+    let subtitleProgress: SubtitleJobProgress?
     @State private var thumbnail: NSImage?
 
     var body: some View {
@@ -478,6 +488,15 @@ struct VideoRow: View {
             }
 
             Spacer()
+
+            if let subtitleProgress {
+                SubtitleProgressView(progress: subtitleProgress)
+            } else if video.hasEmbeddedSubtitles {
+                Image(systemName: "captions.bubble")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .help("已有字幕")
+            }
         }
         .padding(.vertical, 5)
         .onAppear {
@@ -490,6 +509,27 @@ struct VideoRow: View {
             }
             thumbnail = await VideoThumbnailLoader.thumbnail(for: video)
         }
+    }
+}
+
+struct SubtitleProgressView: View {
+    let progress: SubtitleJobProgress
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("\(progress.percent)%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                ProgressView(value: Double(progress.percent), total: 100)
+                    .frame(width: 72)
+            }
+            Text(progress.desc)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(width: 150, alignment: .trailing)
     }
 }
 

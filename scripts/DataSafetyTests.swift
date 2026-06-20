@@ -11,6 +11,11 @@ struct DataSafetyTests {
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
+        try await testSubtitlesEmbedIntoEncryptedVideoAtRest()
+        try await testConcurrentSubtitleCommitDoesNotLosePlaybackPosition()
+        try testSubtitleConfigurationTranslatesByDefaultWhenKeyExists()
+        try await testSubtitleProcessCancellationReportsCancellation()
+        try await testSubtitleTranslationRepairsMissingIDs()
         try await testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected()
         try await testImagePlaybackDecryptsOnlyRequestedImage()
         try await testMkvThumbnailUsesMiddleFrame()
@@ -26,6 +31,10 @@ struct DataSafetyTests {
         try await testFailedExportKeepsEncryptedBlobAndIndexEntry()
         try await testFailedIndexSaveAfterExportKeepsEncryptedBlobAndIndexEntry()
         try await testExportRejectsVaultInternalDestination()
+        if let smokeMediaPath = ProcessInfo.processInfo.environment["CRYPTA_SUBTITLE_SMOKE_MEDIA"],
+           !smokeMediaPath.isEmpty {
+            try await testSubtitleGenerationSmoke(mediaURL: URL(fileURLWithPath: smokeMediaPath))
+        }
         print("Data safety tests passed")
     }
 
@@ -195,6 +204,268 @@ struct DataSafetyTests {
             !playback.url.path.hasPrefix(harness.locations.vaultPackage.path + "/"),
             "Temporary playback file was written inside the vault package."
         )
+    }
+
+    private static func testSubtitlesEmbedIntoEncryptedVideoAtRest() async throws {
+        guard let ffmpegURL = ffmpegExecutableURL() else {
+            print("Skipping subtitle embed test: ffmpeg not found")
+            return
+        }
+
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let source = harness.root.appendingPathComponent("Subtitle.mkv", isDirectory: false)
+        try runFFmpeg(
+            ffmpegURL,
+            arguments: [
+                "-v", "error",
+                "-f", "lavfi",
+                "-i", "color=c=black:size=160x90:rate=1:d=1",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                source.path
+            ]
+        )
+        let sourceData = try Data(contentsOf: source)
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await store.importVideo(from: source, libraryKind: .video, mediaType: .video)
+        let sourceSRT = "1\n00:00:00,000 --> 00:00:01,000\nHello\n"
+
+        let sessionDirectory = harness.root.appendingPathComponent("Session", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let mediaURL = sessionDirectory.appendingPathComponent("media.mkv", isDirectory: false)
+        let srtURL = sessionDirectory.appendingPathComponent("media.srt", isDirectory: false)
+        let embeddedURL = sessionDirectory.appendingPathComponent("media.embedded.mkv", isDirectory: false)
+        try store.materializeMedia(video, to: mediaURL)
+        try sourceSRT.write(to: srtURL, atomically: true, encoding: .utf8)
+        try runFFmpeg(
+            ffmpegURL,
+            arguments: [
+                "-y",
+                "-loglevel", "error",
+                "-i", mediaURL.path,
+                "-i", srtURL.path,
+                "-map", "0:v",
+                "-map", "0:a?",
+                "-map", "1",
+                "-map_metadata", "0",
+                "-map_chapters", "0",
+                "-c", "copy",
+                "-c:s", "copy",
+                "-metadata:s:s:0", "title=Crypta Subtitles",
+                "-metadata:s:s:0", "handler_name=Crypta Subtitles",
+                "-disposition:s:0", "default",
+                embeddedURL.path
+            ]
+        )
+
+        let updated = try store.commitModifiedVideo(at: embeddedURL, for: video)
+        try expect(updated.hasEmbeddedSubtitles, "Embedded subtitle flag was not saved.")
+
+        guard let encryptedFileName = updated.encryptedFileName else {
+            throw TestFailure("Encrypted video file name was not saved.")
+        }
+        let encryptedURL = harness.locations.moviesVault.appendingPathComponent(encryptedFileName)
+        try expect(FileManager.default.fileExists(atPath: encryptedURL.path), "Encrypted video blob was not written.")
+        let encryptedData = try Data(contentsOf: encryptedURL)
+        try expect(encryptedData != sourceData, "Video was stored as plaintext.")
+
+        let playbackDirectory = harness.root.appendingPathComponent("Playback", isDirectory: true)
+        try FileManager.default.createDirectory(at: playbackDirectory, withIntermediateDirectories: true)
+        let playbackURL = playbackDirectory.appendingPathComponent("playback.mkv", isDirectory: false)
+        try store.materializeMedia(updated, to: playbackURL)
+        try expect(subtitleStreamCount(at: playbackURL) == 1, "Embedded subtitle streams were not written into the video.")
+    }
+
+    private static func testConcurrentSubtitleCommitDoesNotLosePlaybackPosition() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let source = harness.root.appendingPathComponent("Concurrent.mp4", isDirectory: false)
+        try Data("original-private-video".utf8).write(to: source)
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await store.importVideo(from: source, libraryKind: .video, mediaType: .video)
+
+        let modified = harness.root.appendingPathComponent("Concurrent.modified.mp4", isDirectory: false)
+        try Data(repeating: 42, count: 32 * 1024 * 1024).write(to: modified)
+
+        async let subtitleCommit = Task.detached(priority: .userInitiated) {
+            try store.commitModifiedVideo(at: modified, for: video)
+        }.value
+        try? await Task.sleep(for: .milliseconds(20))
+        async let playbackUpdate = Task.detached(priority: .utility) {
+            try store.updatePlaybackPosition(videoID: video.id, seconds: 12)
+        }.value
+
+        _ = try await (subtitleCommit, playbackUpdate)
+        guard let final = try store.loadIndex().videos.first(where: { $0.id == video.id }) else {
+            throw TestFailure("Concurrent index writes removed the video.")
+        }
+        try expect(final.hasEmbeddedSubtitles, "Concurrent playback update lost the subtitle flag.")
+        try expect(final.playbackPositionSeconds == 12, "Concurrent subtitle commit lost the playback position.")
+    }
+
+    private static func testSubtitleConfigurationTranslatesByDefaultWhenKeyExists() throws {
+        let keyed = SubtitleConfiguration.load(
+            contents: """
+            WHISPER_MODEL_PATH="/tmp/crypta-whisper.bin"
+            LLM_OPENROUTER_API_KEY=sk-test
+            """
+        )
+        try expect(keyed.whisperModelPath == "/tmp/crypta-whisper.bin", "Whisper path should not require LLM config.")
+        try expect(keyed.canUseLLM, "API key should still be parsed when present.")
+        try expect(!keyed.segmentationEnabled, "LLM segmentation should require an explicit opt-in.")
+        try expect(keyed.translationEnabled, "LLM translation should default on when an API key exists.")
+        try expect(keyed.translationBatchCues == 40, "LLM translation batches should stay small enough for reliable long-video output.")
+
+        let localOnly = SubtitleConfiguration.load(contents: "")
+        try expect(!localOnly.canUseLLM, "Missing API key should keep generation local-only.")
+        try expect(localOnly.translationEnabled, "Translation preference should still default on for future keyed configs.")
+
+        let explicitLLM = SubtitleConfiguration.load(
+            contents: """
+            LLM_OPENROUTER_API_KEY=sk-test
+            LLM_SEGMENTATION_ENABLED=true
+            """
+        )
+        try expect(explicitLLM.segmentationEnabled, "Explicit segmentation opt-in was ignored.")
+        try expect(explicitLLM.translationEnabled, "Default translation with an API key was ignored.")
+
+        let disabledTranslation = SubtitleConfiguration.load(
+            contents: """
+            LLM_OPENROUTER_API_KEY=sk-test
+            LLM_TRANSLATION_ENABLED=0
+            """
+        )
+        try expect(!disabledTranslation.translationEnabled, "Explicit translation opt-out was ignored.")
+    }
+
+    private static func testSubtitleTranslationRepairsMissingIDs() async throws {
+        let cues = (1...5).map { index in
+            SubtitleCue(
+                id: index,
+                startMs: index * 1_000,
+                endMs: index * 1_000 + 900,
+                englishLines: ["Line \(index)"],
+                chineseLines: []
+            )
+        }
+        let configuration = SubtitleConfiguration.load(contents: "LLM_OPENROUTER_API_KEY=sk-test")
+        var requestedTargetIDs: [[Int]] = []
+        let translated = try await SubtitleBilingualTranslator.translate(
+            cues,
+            sourceLanguage: "en",
+            configuration: configuration,
+            requestJSON: { _, _, payload, _, _ in
+                guard let ids = payload["target_ids"] as? [Int] else {
+                    throw TestFailure("Missing target ids in translation request.")
+                }
+                requestedTargetIDs.append(ids)
+                if requestedTargetIDs.count == 1 {
+                    return [
+                        "translations": ids.dropLast().map { id in
+                            ["id": id, "zh": "中文 \(id)"]
+                        }
+                    ]
+                }
+                return [
+                    "translations": ids.map { id in
+                        ["id": id, "zh": "补译 \(id)"]
+                    }
+                ]
+            }
+        )
+
+        try expect(requestedTargetIDs == [[1, 2, 3, 4, 5], [5]], "Missing translation ids were not retried narrowly.")
+        try expect(translated[0].chineseText == "中文 1", "Existing translations should be preserved.")
+        try expect(translated[4].chineseText == "补译 5", "Missing translation id was not repaired.")
+    }
+
+    private static func testSubtitleProcessCancellationReportsCancellation() async throws {
+        let sleepURL = URL(fileURLWithPath: "/bin/sleep")
+        guard FileManager.default.isExecutableFile(atPath: sleepURL.path) else {
+            return
+        }
+
+        let task = Task {
+            try await SubtitleProcessRunner.run(executable: sleepURL, arguments: ["5"])
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+
+        do {
+            try await task.value
+            throw TestFailure("Cancelled subtitle process unexpectedly succeeded.")
+        } catch is CancellationError {
+            return
+        }
+    }
+
+    @MainActor
+    private static func testSubtitleGenerationSmoke(mediaURL sourceURL: URL) async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let importURL = harness.root.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
+        try FileManager.default.copyItem(at: sourceURL, to: importURL)
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await store.importVideo(from: importURL, libraryKind: .video, mediaType: .video)
+        let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
+
+        let generationLease = try await manager.acquireMediaLease(for: video, store: store)
+        let generator = SubtitleGenerator { _, _ in }
+        try await generator.generate(from: generationLease.url, force: false)
+        let updated = try store.commitModifiedVideo(at: generationLease.url, for: video)
+        generationLease.release()
+
+        let playbackLease = try await manager.acquireMediaLease(for: updated, store: store)
+        try expect(
+            subtitleStreamCount(at: playbackLease.url) == 1,
+            "Subtitle smoke media did not get an embedded subtitle stream."
+        )
+        playbackLease.release()
+        manager.shutdown()
+    }
+
+    private static func subtitleStreamCount(at videoURL: URL) throws -> Int {
+        guard let ffprobeURL = ffprobeExecutableURL() else {
+            throw TestFailure("ffprobe not found")
+        }
+        let process = Process()
+        process.executableURL = ffprobeURL
+        process.arguments = [
+            "-v", "error",
+            "-select_streams", "s",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            videoURL.path
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw TestFailure("ffprobe exit \(process.terminationStatus)")
+        }
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return output.split(whereSeparator: \.isNewline).filter { !$0.isEmpty }.count
+    }
+
+    private static func ffprobeExecutableURL() -> URL? {
+        let fileManager = FileManager.default
+        let candidates = [
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            "/usr/bin/ffprobe"
+        ]
+        return candidates
+            .map { URL(fileURLWithPath: $0) }
+            .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
     private static func testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected() async throws {

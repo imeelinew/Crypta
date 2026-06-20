@@ -15,6 +15,7 @@ final class CryptaLibrary {
     private var primarySelectedVideoID: CryptaVideo.ID?
     var renameRequest: RenameRequest?
     var deleteRequest: DeleteRequest?
+    var subtitleOverwriteRequest: SubtitleOverwriteRequest?
     var editGroupRequest: EditGroupRequest?
     var newGroupFormPresented = false
     var toast: CryptaToast?
@@ -38,10 +39,12 @@ final class CryptaLibrary {
     private var playbackPositionSaveTasks: [CryptaVideo.ID: Task<Void, Never>] = [:]
     private var externalMediaLeases: [pid_t: [DecryptedMediaLease]] = [:]
     private var externalPlayerTerminationObserver: NSObjectProtocol?
+    private var subtitleTask: Task<Void, Never>?
     private let mediaSessions: DecryptedMediaSessionManager
+    private(set) var subtitleJob: SubtitleJobProgress?
 
-    init(mediaSessions: DecryptedMediaSessionManager = .shared) {
-        self.mediaSessions = mediaSessions
+    init(mediaSessions: DecryptedMediaSessionManager? = nil) {
+        self.mediaSessions = mediaSessions ?? .shared
         externalPlayerTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
@@ -103,6 +106,31 @@ final class CryptaLibrary {
 
     var canActOnSelection: Bool {
         !selectedVideos.isEmpty && !isImporting && !isWorking
+    }
+
+    func subtitleProgress(for video: CryptaVideo) -> SubtitleJobProgress? {
+        guard subtitleJob?.videoID == video.id else { return nil }
+        return subtitleJob
+    }
+
+    func subtitleActionTitle(for video: CryptaVideo) -> String {
+        if subtitleJob?.videoID == video.id {
+            return "停止生成字幕"
+        }
+        return video.hasEmbeddedSubtitles ? "重新生成字幕" : "生成字幕"
+    }
+
+    func canGenerateSubtitles(for video: CryptaVideo) -> Bool {
+        guard let group = selectedGroup,
+              canAccessSelectedGroup,
+              group.encryptionLevel == .standard,
+              video.mediaType == .video,
+              SubtitleEmbedder.supportsContainerExtension(video.originalExtension),
+              !isImporting,
+              !isWorking else {
+            return false
+        }
+        return subtitleJob == nil || subtitleJob?.videoID == video.id
     }
 
     func load() async {
@@ -264,6 +292,28 @@ final class CryptaLibrary {
         guard canAccessSelectedGroup else { return }
         guard let video = selectedVideo else { return }
         await play(video)
+    }
+
+    func requestGenerateSubtitles(_ video: CryptaVideo) {
+        guard canGenerateSubtitles(for: video) else { return }
+        if subtitleJob?.videoID == video.id {
+            cancelSubtitleGeneration()
+            return
+        }
+        if video.hasEmbeddedSubtitles {
+            subtitleOverwriteRequest = SubtitleOverwriteRequest(video: video)
+            return
+        }
+        generateSubtitles(for: video)
+    }
+
+    func confirmRegenerateSubtitles(_ request: SubtitleOverwriteRequest) {
+        subtitleOverwriteRequest = nil
+        generateSubtitles(for: request.video)
+    }
+
+    func cancelSubtitleGeneration() {
+        subtitleTask?.cancel()
     }
 
     func previewSelectedVideo() async {
@@ -653,6 +703,40 @@ final class CryptaLibrary {
             lease?.release()
             showToast("播放失败", kind: .error)
             errorMessage = "播放失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func generateSubtitles(for video: CryptaVideo) {
+        guard canGenerateSubtitles(for: video), subtitleTask == nil else { return }
+        subtitleJob = SubtitleJobProgress(videoID: video.id, percent: 0, desc: "准备生成字幕")
+        subtitleTask = Task { [weak self] in
+            guard let self else { return }
+            var lease: DecryptedMediaLease?
+            do {
+                let acquiredLease = try await mediaSessions.acquireMediaLease(for: video, store: store)
+                lease = acquiredLease
+                let generator = SubtitleGenerator { [weak self] percent, desc in
+                    guard let self else { return }
+                    self.subtitleJob = SubtitleJobProgress(videoID: video.id, percent: percent, desc: desc)
+                }
+                let force = video.hasEmbeddedSubtitles
+                try await generator.generate(from: acquiredLease.url, force: force)
+                try Task.checkCancellation()
+                let updated = try await Task.detached(priority: .userInitiated) {
+                    try self.store.commitModifiedVideo(at: acquiredLease.url, for: video)
+                }.value
+                replace(updated)
+                subtitleJob = SubtitleJobProgress(videoID: video.id, percent: 100, desc: "字幕已写入视频")
+                showToast("字幕已写入视频")
+            } catch is CancellationError {
+                showToast("已停止生成字幕")
+            } catch {
+                showToast(error.localizedDescription, kind: .error)
+                errorMessage = error.localizedDescription
+            }
+            lease?.release()
+            subtitleTask = nil
+            subtitleJob = nil
         }
     }
 

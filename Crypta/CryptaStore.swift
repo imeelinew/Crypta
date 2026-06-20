@@ -105,6 +105,7 @@ nonisolated final class CryptaStore: @unchecked Sendable {
     private let locations: CryptaStorageLocations
     private let indexEncoder = JSONEncoder()
     private let indexDecoder = JSONDecoder()
+    private let indexMutationLock = NSRecursiveLock()
     private let chunkSize = 4 * 1024 * 1024
 
     init(
@@ -116,6 +117,12 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         indexEncoder.outputFormatting = [.sortedKeys]
         indexEncoder.dateEncodingStrategy = .iso8601
         indexDecoder.dateDecodingStrategy = .iso8601
+    }
+
+    private func withIndexMutation<T>(_ operation: () throws -> T) rethrows -> T {
+        indexMutationLock.lock()
+        defer { indexMutationLock.unlock() }
+        return try operation()
     }
 
     func loadIndex() throws -> CryptaIndex {
@@ -139,56 +146,66 @@ nonisolated final class CryptaStore: @unchecked Sendable {
     }
 
     func createGroup(_ group: LibraryGroup) throws {
-        var index = try loadIndex()
-        guard !index.groups.contains(where: { $0.name == group.name }) else {
-            throw CryptaError.duplicateGroupName
+        try withIndexMutation {
+            var index = try loadIndex()
+            guard !index.groups.contains(where: { $0.name == group.name }) else {
+                throw CryptaError.duplicateGroupName
+            }
+            index.groups.append(group)
+            try saveIndex(index)
         }
-        index.groups.append(group)
-        try saveIndex(index)
     }
 
     func renameGroup(id: String, to newName: String) throws {
-        var index = try loadIndex()
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let position = index.groups.firstIndex(where: { $0.id == id }) else {
-            throw CryptaError.groupNotFound
+        try withIndexMutation {
+            var index = try loadIndex()
+            let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            guard let position = index.groups.firstIndex(where: { $0.id == id }) else {
+                throw CryptaError.groupNotFound
+            }
+            guard !index.groups.contains(where: { $0.id != id && $0.name == trimmed }) else {
+                throw CryptaError.duplicateGroupName
+            }
+            index.groups[position].name = trimmed
+            try saveIndex(index)
         }
-        guard !index.groups.contains(where: { $0.id != id && $0.name == trimmed }) else {
-            throw CryptaError.duplicateGroupName
-        }
-        index.groups[position].name = trimmed
-        try saveIndex(index)
     }
 
     func deleteGroup(id: String) throws {
-        var index = try loadIndex()
-        guard !index.videos.contains(where: { $0.libraryKind.rawValue == id }) else {
-            throw CryptaError.groupNotEmpty
+        try withIndexMutation {
+            var index = try loadIndex()
+            guard !index.videos.contains(where: { $0.libraryKind.rawValue == id }) else {
+                throw CryptaError.groupNotEmpty
+            }
+            index.groups.removeAll { $0.id == id }
+            try saveIndex(index)
         }
-        index.groups.removeAll { $0.id == id }
-        try saveIndex(index)
     }
 
     func saveGroupOrder(_ groups: [LibraryGroup]) throws {
-        var index = try loadIndex()
-        let groupIDs = Set(groups.map(\.id))
-        guard groupIDs.count == groups.count else {
-            throw CryptaError.groupNotFound
+        try withIndexMutation {
+            var index = try loadIndex()
+            let groupIDs = Set(groups.map(\.id))
+            guard groupIDs.count == groups.count else {
+                throw CryptaError.groupNotFound
+            }
+            guard groupIDs == Set(index.groups.map(\.id)) else {
+                throw CryptaError.groupNotFound
+            }
+            index.groups = groups
+            try saveIndex(index)
         }
-        guard groupIDs == Set(index.groups.map(\.id)) else {
-            throw CryptaError.groupNotFound
-        }
-        index.groups = groups
-        try saveIndex(index)
     }
 
     func saveIndex(_ index: CryptaIndex) throws {
-        try locations.prepareDirectories()
-        let plaintext = try indexEncoder.encode(index)
-        let encrypted = try encryptCombined(plaintext)
-        try preserveCurrentIndexBackup()
-        try encrypted.write(to: locations.encryptedIndex, options: [.atomic])
+        try withIndexMutation {
+            try locations.prepareDirectories()
+            let plaintext = try indexEncoder.encode(index)
+            let encrypted = try encryptCombined(plaintext)
+            try preserveCurrentIndexBackup()
+            try encrypted.write(to: locations.encryptedIndex, options: [.atomic])
+        }
     }
 
     private func decodeIndex(from encrypted: Data) throws -> CryptaIndex {
@@ -290,7 +307,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             encryptedFileName = destinationFileName
         }
 
-        var index = try loadIndex()
         let video = CryptaVideo(
             id: id,
             displayName: displayName,
@@ -304,8 +320,11 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             byteCount: byteCount,
             durationSeconds: durationSeconds
         )
-        index.videos.append(video)
-        try saveIndex(index)
+        try withIndexMutation {
+            var index = try loadIndex()
+            index.videos.append(video)
+            try saveIndex(index)
+        }
         try? FileManager.default.removeItem(at: sourceURL)
         return video
     }
@@ -384,52 +403,116 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         try encrypted.write(to: thumbnailURL(for: video, in: locations.thumbnailCache), options: [.atomic])
     }
 
+    func commitModifiedVideo(at modifiedVideoURL: URL, for video: CryptaVideo) throws -> CryptaVideo {
+        try locations.prepareDirectories()
+        return try replaceStoredVideo(
+            with: modifiedVideoURL,
+            for: video,
+            hasEmbeddedSubtitles: true
+        )
+    }
+
+    private func replaceStoredVideo(
+        with newVideoURL: URL,
+        for video: CryptaVideo,
+        hasEmbeddedSubtitles: Bool
+    ) throws -> CryptaVideo {
+        try withIndexMutation {
+            var index = try loadIndex()
+            guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }) else {
+                throw CryptaError.missingIndexEntry
+            }
+
+            let newByteCount = try fileByteCount(at: newVideoURL)
+            var updated = index.videos[indexPosition]
+            updated.hasEmbeddedSubtitles = hasEmbeddedSubtitles
+            updated.byteCount = newByteCount
+
+            switch updated.storageState {
+            case .plain:
+                guard let plainFileName = updated.plainFileName else { throw CryptaError.missingVideoFile }
+                let plainURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
+                let replacementURL = plainURL.deletingLastPathComponent()
+                    .appendingPathComponent(".crypta-replace-\(UUID().uuidString).\(updated.originalExtension)", isDirectory: false)
+                try FileManager.default.copyItem(at: newVideoURL, to: replacementURL)
+                _ = try FileManager.default.replaceItemAt(plainURL, withItemAt: replacementURL)
+            case .encrypted:
+                guard let oldEncryptedFileName = updated.encryptedFileName else { throw CryptaError.missingVideoFile }
+                let oldEncryptedURL = locations.moviesVault.appendingPathComponent(oldEncryptedFileName, isDirectory: false)
+                let newEncryptedFileName = randomBlobName()
+                let newEncryptedURL = locations.moviesVault.appendingPathComponent(newEncryptedFileName, isDirectory: false)
+                try encryptFile(from: newVideoURL, to: newEncryptedURL)
+                updated.encryptedFileName = newEncryptedFileName
+                index.videos[indexPosition] = updated
+                try saveIndex(index)
+                try? FileManager.default.removeItem(at: oldEncryptedURL)
+                return updated
+            }
+
+            index.videos[indexPosition] = updated
+            try saveIndex(index)
+            return updated
+        }
+    }
+
+    private func fileByteCount(at url: URL) throws -> Int64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw CryptaError.missingVideoFile
+        }
+        return size.int64Value
+    }
+
     func deleteThumbnail(for video: CryptaVideo) {
         try? FileManager.default.removeItem(at: thumbnailURL(for: video, in: locations.thumbnailCache))
     }
 
     func rename(_ video: CryptaVideo, to newName: String) throws -> CryptaVideo {
-        var index = try loadIndex()
-        guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }) else {
-            throw CryptaError.missingIndexEntry
+        try withIndexMutation {
+            var index = try loadIndex()
+            guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }) else {
+                throw CryptaError.missingIndexEntry
+            }
+
+            var updated = index.videos[indexPosition]
+            updated.displayName = newName
+
+            if updated.storageState == .plain, let oldFileName = updated.plainFileName {
+                let oldURL = locations.moviesVault.appendingPathComponent(oldFileName, isDirectory: false)
+                let newFileName = uniquePlainFileName(displayName: newName, extensionName: updated.originalExtension)
+                let newURL = locations.moviesVault.appendingPathComponent(newFileName, isDirectory: false)
+                try FileManager.default.moveItem(at: oldURL, to: newURL)
+                updated.plainFileName = newFileName
+            }
+
+            index.videos[indexPosition] = updated
+            try saveIndex(index)
+            return updated
         }
-
-        var updated = index.videos[indexPosition]
-        updated.displayName = newName
-
-        if updated.storageState == .plain, let oldFileName = updated.plainFileName {
-            let oldURL = locations.moviesVault.appendingPathComponent(oldFileName, isDirectory: false)
-            let newFileName = uniquePlainFileName(displayName: newName, extensionName: updated.originalExtension)
-            let newURL = locations.moviesVault.appendingPathComponent(newFileName, isDirectory: false)
-            try FileManager.default.moveItem(at: oldURL, to: newURL)
-            updated.plainFileName = newFileName
-        }
-
-        index.videos[indexPosition] = updated
-        try saveIndex(index)
-        return updated
     }
 
     func encryptPlainVideo(_ video: CryptaVideo) throws -> CryptaVideo {
-        var index = try loadIndex()
-        guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }),
-              let plainFileName = index.videos[indexPosition].plainFileName else {
-            throw CryptaError.missingIndexEntry
+        try withIndexMutation {
+            var index = try loadIndex()
+            guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }),
+                  let plainFileName = index.videos[indexPosition].plainFileName else {
+                throw CryptaError.missingIndexEntry
+            }
+
+            let plainURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
+            let encryptedFileName = randomBlobName()
+            let encryptedURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
+            try encryptFile(from: plainURL, to: encryptedURL)
+
+            var updated = index.videos[indexPosition]
+            updated.storageState = .encrypted
+            updated.plainFileName = nil
+            updated.encryptedFileName = encryptedFileName
+            index.videos[indexPosition] = updated
+            try saveIndex(index)
+            try? FileManager.default.removeItem(at: plainURL)
+            return updated
         }
-
-        let plainURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
-        let encryptedFileName = randomBlobName()
-        let encryptedURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
-        try encryptFile(from: plainURL, to: encryptedURL)
-
-        var updated = index.videos[indexPosition]
-        updated.storageState = .encrypted
-        updated.plainFileName = nil
-        updated.encryptedFileName = encryptedFileName
-        index.videos[indexPosition] = updated
-        try saveIndex(index)
-        try? FileManager.default.removeItem(at: plainURL)
-        return updated
     }
 
     func exportAndRemoveDecryptedVideo(_ video: CryptaVideo, to destinationDirectory: URL) throws -> URL {
@@ -437,70 +520,76 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             throw CryptaError.invalidExportDestination
         }
 
-        var index = try loadIndex()
-        guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }),
-              let encryptedFileName = index.videos[indexPosition].encryptedFileName else {
-            throw CryptaError.missingIndexEntry
-        }
+        return try withIndexMutation {
+            var index = try loadIndex()
+            guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }),
+                  let encryptedFileName = index.videos[indexPosition].encryptedFileName else {
+                throw CryptaError.missingIndexEntry
+            }
 
-        let encryptedURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
-        let plainFileName = uniqueFileName(
-            displayName: index.videos[indexPosition].displayName,
-            extensionName: index.videos[indexPosition].originalExtension,
-            in: destinationDirectory
-        )
-        let finalURL = destinationDirectory.appendingPathComponent(plainFileName, isDirectory: false)
-        let temporaryURL = destinationDirectory.appendingPathComponent(
-            ".crypta-export-\(UUID().uuidString).tmp",
-            isDirectory: false
-        )
-        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
-        try decryptFile(from: encryptedURL, to: temporaryURL)
-        do {
-            try FileManager.default.moveItem(at: temporaryURL, to: finalURL)
-        } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
-            throw error
-        }
+            let encryptedURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
+            let plainFileName = uniqueFileName(
+                displayName: index.videos[indexPosition].displayName,
+                extensionName: index.videos[indexPosition].originalExtension,
+                in: destinationDirectory
+            )
+            let finalURL = destinationDirectory.appendingPathComponent(plainFileName, isDirectory: false)
+            let temporaryURL = destinationDirectory.appendingPathComponent(
+                ".crypta-export-\(UUID().uuidString).tmp",
+                isDirectory: false
+            )
+            try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+            try decryptFile(from: encryptedURL, to: temporaryURL)
+            do {
+                try FileManager.default.moveItem(at: temporaryURL, to: finalURL)
+            } catch {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                throw error
+            }
 
-        index.videos.remove(at: indexPosition)
-        try saveIndex(index)
-        try? FileManager.default.removeItem(at: encryptedURL)
-        deleteThumbnail(for: video)
-        return finalURL
+            index.videos.remove(at: indexPosition)
+            try saveIndex(index)
+            try? FileManager.default.removeItem(at: encryptedURL)
+            deleteThumbnail(for: video)
+            return finalURL
+        }
     }
 
     func delete(_ video: CryptaVideo) throws {
-        var index = try loadIndex()
-        index.videos.removeAll { $0.id == video.id }
-        try saveIndex(index)
+        try withIndexMutation {
+            var index = try loadIndex()
+            index.videos.removeAll { $0.id == video.id }
+            try saveIndex(index)
 
-        switch video.storageState {
-        case .plain:
-            if let plainFileName = video.plainFileName {
-                try? FileManager.default.removeItem(
-                    at: locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
-                )
+            switch video.storageState {
+            case .plain:
+                if let plainFileName = video.plainFileName {
+                    try? FileManager.default.removeItem(
+                        at: locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
+                    )
+                }
+            case .encrypted:
+                if let encryptedFileName = video.encryptedFileName {
+                    try? FileManager.default.removeItem(
+                        at: locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
+                    )
+                }
             }
-        case .encrypted:
-            if let encryptedFileName = video.encryptedFileName {
-                try? FileManager.default.removeItem(
-                    at: locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
-                )
-            }
+            deleteThumbnail(for: video)
         }
-        deleteThumbnail(for: video)
     }
 
     func updatePlaybackPosition(videoID: CryptaVideo.ID, seconds: Double?) throws -> CryptaVideo? {
-        var index = try loadIndex()
-        guard let indexPosition = index.videos.firstIndex(where: { $0.id == videoID }) else {
-            return nil
-        }
+        try withIndexMutation {
+            var index = try loadIndex()
+            guard let indexPosition = index.videos.firstIndex(where: { $0.id == videoID }) else {
+                return nil
+            }
 
-        index.videos[indexPosition].playbackPositionSeconds = seconds
-        try saveIndex(index)
-        return index.videos[indexPosition]
+            index.videos[indexPosition].playbackPositionSeconds = seconds
+            try saveIndex(index)
+            return index.videos[indexPosition]
+        }
     }
 
     private func thumbnailURL(for video: CryptaVideo, in directory: URL) -> URL {
