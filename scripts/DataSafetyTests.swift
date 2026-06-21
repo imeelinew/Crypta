@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 
 @main
@@ -11,6 +12,9 @@ struct DataSafetyTests {
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
+        try await testEncryptedMediaDataSourceReadsRangesWithoutTemporaryPlaintext()
+        try await testInMemoryPlaybackSourceLoadsSyntheticAsset()
+        try await testEncryptedVideoThumbnailDoesNotMaterializePlaybackFile()
         try await testSubtitlesEmbedIntoEncryptedVideoAtRest()
         try await testConcurrentSubtitleCommitDoesNotLosePlaybackPosition()
         try testSubtitleConfigurationTranslatesByDefaultWhenKeyExists()
@@ -277,6 +281,94 @@ struct DataSafetyTests {
         let playbackURL = playbackDirectory.appendingPathComponent("playback.mkv", isDirectory: false)
         try store.materializeMedia(updated, to: playbackURL)
         try expect(subtitleStreamCount(at: playbackURL) == 1, "Embedded subtitle streams were not written into the video.")
+    }
+
+    private static func testEncryptedMediaDataSourceReadsRangesWithoutTemporaryPlaintext() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = patternedData(count: 4 * 1024 * 1024 + 257)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "Memory.mp4", data: plaintext, store: store)
+
+        let dataSource = try store.inMemoryMediaDataSource(for: video)
+        try expect(dataSource.byteCount == Int64(plaintext.count), "Memory data source reported the wrong byte count.")
+        try expect(
+            try dataSource.data(offset: 0, length: 32) == plaintext.subdata(in: 0..<32),
+            "Memory data source did not return the first range."
+        )
+
+        let boundaryStart = 4 * 1024 * 1024 - 16
+        try expect(
+            try dataSource.data(offset: Int64(boundaryStart), length: 64) == plaintext.subdata(in: boundaryStart..<(boundaryStart + 64)),
+            "Memory data source did not read across an encrypted chunk boundary."
+        )
+
+        let tailStart = plaintext.count - 40
+        try expect(
+            try dataSource.data(offset: Int64(tailStart), length: 80) == plaintext.subdata(in: tailStart..<plaintext.count),
+            "Memory data source did not clamp the final range to the media length."
+        )
+        try expect(
+            regularFiles(under: harness.locations.cacheRoot).isEmpty,
+            "Memory playback source created cache/session files."
+        )
+    }
+
+    private static func testEncryptedVideoThumbnailDoesNotMaterializePlaybackFile() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = Data("synthetic-encrypted-video".utf8)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(named: "NoThumbnail.mp4", data: plaintext, store: store)
+
+        let thumbnail = await VideoThumbnailLoader.thumbnail(for: video, store: store)
+        try expect(thumbnail == nil, "Encrypted video without a cached thumbnail should not generate one from plaintext.")
+        try expect(
+            regularFiles(under: harness.locations.cacheRoot).isEmpty,
+            "Encrypted video thumbnail generation materialized a playback file."
+        )
+    }
+
+    private static func testInMemoryPlaybackSourceLoadsSyntheticAsset() async throws {
+        guard let ffmpegURL = ffmpegExecutableURL() else {
+            print("Skipping in-memory playback asset test: ffmpeg not found")
+            return
+        }
+
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let source = harness.root.appendingPathComponent("MemoryAsset.mp4", isDirectory: false)
+        try runFFmpeg(
+            ffmpegURL,
+            arguments: [
+                "-v", "error",
+                "-f", "lavfi",
+                "-i", "color=c=black:size=160x90:rate=1:d=1",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                source.path
+            ]
+        )
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await store.importVideo(from: source, storageState: .encrypted)
+        let dataSource = try store.inMemoryMediaDataSource(for: video)
+        let playbackSource = InMemoryMediaPlaybackSource(dataSource: dataSource)
+        let item = playbackSource.makePlayerItem(for: video)
+        let duration = try await item.asset.load(.duration)
+        playbackSource.invalidate()
+
+        try expect(
+            CMTimeGetSeconds(duration).isFinite && CMTimeGetSeconds(duration) > 0,
+            "AVFoundation did not load duration from the in-memory playback source."
+        )
+        try expect(
+            regularFiles(under: harness.locations.cacheRoot).isEmpty,
+            "In-memory AVFoundation asset loading created cache/session files."
+        )
     }
 
     private static func testConcurrentSubtitleCommitDoesNotLosePlaybackPosition() async throws {
@@ -947,6 +1039,37 @@ struct DataSafetyTests {
             throw TestFailure("Could not encode PNG fixture.")
         }
         return data
+    }
+
+    private static func patternedData(count: Int) -> Data {
+        var data = Data(count: count)
+        data.withUnsafeMutableBytes { buffer in
+            guard let bytes = buffer.bindMemory(to: UInt8.self).baseAddress else { return }
+            for index in 0..<count {
+                bytes[index] = UInt8(index % 251)
+            }
+        }
+        return data
+    }
+
+    private static func regularFiles(under root: URL) throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: root.path),
+              let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            if values.isRegularFile == true {
+                files.append(url)
+            }
+        }
+        return files
     }
 
     private static func sampleVideo(displayName: String, importedAt: Date) -> CryptaVideo {

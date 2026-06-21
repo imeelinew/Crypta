@@ -18,6 +18,7 @@ xcrun swiftc \
   "$ROOT_DIR/Crypta/SubtitleEmbedder.swift" \
   "$ROOT_DIR/Crypta/SubtitleGenerator.swift" \
   "$ROOT_DIR/Crypta/CryptaStore.swift" \
+  "$ROOT_DIR/Crypta/InMemoryMediaPlaybackSource.swift" \
   "$ROOT_DIR/Crypta/DecryptedMediaSessionManager.swift" \
   "$ROOT_DIR/Crypta/VideoThumbnailLoader.swift" \
   "$ROOT_DIR/scripts/DataSafetyTests.swift" \

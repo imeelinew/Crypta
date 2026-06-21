@@ -369,6 +369,30 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         }
     }
 
+    func inMemoryMediaDataSource(for video: CryptaVideo) throws -> EncryptedMediaDataSource {
+        try locations.prepareDirectories()
+        guard video.storageState == .encrypted,
+              let encryptedFileName = video.encryptedFileName else {
+            throw CryptaError.missingVideoFile
+        }
+        let sourceURL = locations.moviesVault.appendingPathComponent(encryptedFileName, isDirectory: false)
+        return try EncryptedMediaDataSource(
+            sourceURL: sourceURL,
+            originalExtension: video.originalExtension,
+            byteCount: video.byteCount,
+            key: existingKeyForDecryption()
+        )
+    }
+
+    func storedPlainMediaURL(for video: CryptaVideo) throws -> URL {
+        try locations.prepareDirectories()
+        guard video.storageState == .plain,
+              let plainFileName = video.plainFileName else {
+            throw CryptaError.missingVideoFile
+        }
+        return locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
+    }
+
     func materializeImageGroup(
         _ videos: [CryptaVideo],
         to directoryURL: URL

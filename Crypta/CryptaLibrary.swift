@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import SwiftUI
 
@@ -372,12 +373,24 @@ final class CryptaLibrary {
             defer { isWorking = false }
 
             guard let group = selectedGroup else { return }
-            let lease = try await mediaSessions.acquireMediaLease(for: video, store: store)
+            let playerItem: AVPlayerItem
+            let inMemoryPlaybackSource: InMemoryMediaPlaybackSource?
+            if video.storageState == .encrypted {
+                let dataSource = try store.inMemoryMediaDataSource(for: video)
+                let playbackSource = InMemoryMediaPlaybackSource(dataSource: dataSource)
+                playerItem = playbackSource.makePlayerItem(for: video)
+                inMemoryPlaybackSource = playbackSource
+            } else {
+                let url = try store.storedPlainMediaURL(for: video)
+                playerItem = AVPlayerItem(url: url)
+                inMemoryPlaybackSource = nil
+            }
             playerWindowController?.close()
             let playerWindowController = PlayerWindowController(
                 title: video.displayName,
-                url: lease.url,
-                mediaLease: lease,
+                playerItem: playerItem,
+                mediaLease: nil,
+                inMemoryPlaybackSource: inMemoryPlaybackSource,
                 startTimeSeconds: resumePosition(for: video),
                 onProgress: { [weak self] seconds in
                     self?.savePlaybackPosition(for: video, seconds: seconds)

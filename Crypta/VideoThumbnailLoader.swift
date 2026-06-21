@@ -36,6 +36,9 @@ enum VideoThumbnailLoader {
                let image = NSImage(data: data) {
                 return image
             }
+            if video.storageState == .encrypted, !video.isImage {
+                return nil
+            }
 
             try Task.checkCancellation()
             await generationGate.wait()

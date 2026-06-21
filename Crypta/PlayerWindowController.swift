@@ -6,6 +6,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     private var player: AVPlayer?
     private let title: String
     private var mediaLease: DecryptedMediaLease?
+    private var inMemoryPlaybackSource: InMemoryMediaPlaybackSource?
     private let startTimeSeconds: Double
     private let onProgress: @MainActor (Double) -> Void
     private let unlock: @MainActor () -> Void
@@ -21,8 +22,9 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
     init(
         title: String,
-        url: URL,
-        mediaLease: DecryptedMediaLease,
+        playerItem: AVPlayerItem,
+        mediaLease: DecryptedMediaLease?,
+        inMemoryPlaybackSource: InMemoryMediaPlaybackSource?,
         startTimeSeconds: Double,
         onProgress: @escaping @MainActor (Double) -> Void,
         unlock: @escaping @MainActor () -> Void,
@@ -30,6 +32,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     ) {
         self.title = title
         self.mediaLease = mediaLease
+        self.inMemoryPlaybackSource = inMemoryPlaybackSource
         self.startTimeSeconds = startTimeSeconds
         self.onProgress = onProgress
         self.unlock = unlock
@@ -56,7 +59,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         doubleClickGesture.numberOfClicksRequired = 2
         playerView.addGestureRecognizer(doubleClickGesture)
 
-        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        player.replaceCurrentItem(with: playerItem)
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 5, preferredTimescale: 600),
             queue: .main
@@ -156,6 +159,8 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
         mediaLease?.release()
         mediaLease = nil
+        inMemoryPlaybackSource?.invalidate()
+        inMemoryPlaybackSource = nil
 
         onClose()
     }
