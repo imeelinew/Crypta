@@ -294,6 +294,11 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         var plainFileName: String?
         var encryptedFileName: String?
 
+        var preEncryptedThumbnailData: Data?
+        if mediaType == .video {
+            preEncryptedThumbnailData = await VideoThumbnailLoader.thumbnailData(from: sourceURL)
+        }
+
         switch storageState {
         case .plain:
             let destinationFileName = uniquePlainFileName(displayName: displayName, extensionName: extensionName)
@@ -320,6 +325,9 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             byteCount: byteCount,
             durationSeconds: durationSeconds
         )
+        if let thumbnailData = preEncryptedThumbnailData {
+            try? saveThumbnailData(thumbnailData, for: video)
+        }
         try withIndexMutation {
             var index = try loadIndex()
             index.videos.append(video)
@@ -820,9 +828,10 @@ nonisolated final class CryptaStore: @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(2))
                 return nil
             }
-            let result = await group.next() ?? nil
+            let result = await group.next()
             group.cancelAll()
-            return result
+            if let result { return result }
+            return VideoThumbnailLoader.duration(from: url)
         }
     }
 }

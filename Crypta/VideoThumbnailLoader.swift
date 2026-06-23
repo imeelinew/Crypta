@@ -90,6 +90,17 @@ enum VideoThumbnailLoader {
         try await image(from: url, durationSeconds: nil)
     }
 
+    static func thumbnailData(from url: URL) async -> Data? {
+        guard let image = try? await image(from: url) else { return nil }
+        return jpegData(from: image)
+    }
+
+    static func duration(from url: URL) -> Double? {
+        let value = try? ffprobeDuration(from: url)
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
+    }
+
     private static func image(from url: URL, durationSeconds: Double?) async throws -> NSImage? {
         let duration = durationSeconds ?? (try? ffprobeDuration(from: url))
         let seconds = thumbnailSeconds(for: duration)

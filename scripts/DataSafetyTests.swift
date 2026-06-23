@@ -15,6 +15,7 @@ struct DataSafetyTests {
         try await testEncryptedMediaDataSourceReadsRangesWithoutTemporaryPlaintext()
         try await testInMemoryPlaybackSourceLoadsSyntheticAsset()
         try await testEncryptedVideoThumbnailDoesNotMaterializePlaybackFile()
+        try await testEncryptedVideoImportCachesThumbnailWithoutPlaintextLeak()
         try await testSubtitlesEmbedIntoEncryptedVideoAtRest()
         try await testConcurrentSubtitleCommitDoesNotLosePlaybackPosition()
         try testSubtitleConfigurationTranslatesByDefaultWhenKeyExists()
@@ -328,6 +329,46 @@ struct DataSafetyTests {
         try expect(
             regularFiles(under: harness.locations.cacheRoot).isEmpty,
             "Encrypted video thumbnail generation materialized a playback file."
+        )
+    }
+
+    private static func testEncryptedVideoImportCachesThumbnailWithoutPlaintextLeak() async throws {
+        guard let ffmpegURL = ffmpegExecutableURL() else {
+            print("Skipping encrypted video import thumbnail test: ffmpeg not found")
+            return
+        }
+
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let source = harness.root.appendingPathComponent("ThumbnailSource.mp4", isDirectory: false)
+        try runFFmpeg(
+            ffmpegURL,
+            arguments: [
+                "-v", "error",
+                "-f", "lavfi",
+                "-i", "color=c=red:size=160x90:rate=1:d=2",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                source.path
+            ]
+        )
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await store.importVideo(from: source, storageState: .encrypted)
+
+        let cachedData = try store.loadThumbnailData(for: video)
+        try expect(cachedData != nil, "Encrypted video import did not cache a thumbnail.")
+
+        let thumbnail = await VideoThumbnailLoader.thumbnail(for: video, store: store)
+        try expect(thumbnail != nil, "Encrypted video with a cached thumbnail did not surface it.")
+        if let thumbnail {
+            try expect(thumbnail.size.width > 0 && thumbnail.size.height > 0, "Cached thumbnail is empty.")
+        }
+
+        try expect(
+            regularFiles(under: harness.locations.cacheRoot).isEmpty,
+            "Encrypted video import left plaintext files in the cache root."
         )
     }
 
