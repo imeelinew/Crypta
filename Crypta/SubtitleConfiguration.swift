@@ -1,10 +1,31 @@
 import Foundation
+import Security
 
-nonisolated struct SubtitleConfiguration: Sendable {
+nonisolated struct SubtitleSettings: Equatable, Sendable {
     static let defaultWhisperModelPath = NSString(string: "~/whisper-models/ggml-large-v3-turbo.bin").expandingTildeInPath
-    static let defaultBaseURL = URL(string: "https://opencode.ai/zen/go/v1/chat/completions")!
+    static let defaultBaseURLString = "https://opencode.ai/zen/go/v1/chat/completions"
     static let defaultModel = "mimo-v2.5"
 
+    var whisperModelPath: String
+    var apiKey: String
+    var baseURLString: String
+    var model: String
+    var segmentationEnabled: Bool
+    var translationEnabled: Bool
+
+    static var defaults: SubtitleSettings {
+        SubtitleSettings(
+            whisperModelPath: defaultWhisperModelPath,
+            apiKey: "",
+            baseURLString: defaultBaseURLString,
+            model: defaultModel,
+            segmentationEnabled: false,
+            translationEnabled: true
+        )
+    }
+}
+
+nonisolated struct SubtitleConfiguration: Sendable {
     let apiKey: String?
     let baseURL: URL
     let model: String
@@ -20,78 +41,144 @@ nonisolated struct SubtitleConfiguration: Sendable {
         return !apiKey.isEmpty
     }
 
-    static func load() -> SubtitleConfiguration {
-        let contents = (try? loadSecretsContents()) ?? ""
-        return load(contents: contents)
+    init(settings: SubtitleSettings) {
+        let trimmedAPIKey = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = settings.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = settings.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedWhisperModelPath = settings.whisperModelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        apiKey = trimmedAPIKey.isEmpty ? nil : trimmedAPIKey
+        baseURL = URL(string: trimmedBaseURL) ?? URL(string: SubtitleSettings.defaultBaseURLString)!
+        model = trimmedModel.isEmpty ? SubtitleSettings.defaultModel : trimmedModel
+        whisperModelPath = trimmedWhisperModelPath.isEmpty ? SubtitleSettings.defaultWhisperModelPath : trimmedWhisperModelPath
+        segmentationEnabled = settings.segmentationEnabled
+        translationEnabled = settings.translationEnabled
+        segmentationBatchSize = 160
+        translationBatchCues = 40
+        translationContextCues = 8
     }
 
-    static func load(contents: String) -> SubtitleConfiguration {
-        let apiKey = envValue(named: "LLM_OPENROUTER_API_KEY", in: contents)
+    static func load(store: SubtitleSettingsStore = .live) -> SubtitleConfiguration {
+        SubtitleConfiguration(settings: store.load())
+    }
+}
 
-        let baseURLString = envValue(named: "LLM_OPENROUTER_BASE_URL", in: contents)
-            ?? defaultBaseURL.absoluteString
-        let model = envValue(named: "LLM_OPENROUTER_MODEL", in: contents) ?? defaultModel
-        let whisperModelPath = envValue(named: "WHISPER_MODEL_PATH", in: contents) ?? defaultWhisperModelPath
+nonisolated final class SubtitleSettingsStore: @unchecked Sendable {
+    static let live = SubtitleSettingsStore()
 
-        return SubtitleConfiguration(
-            apiKey: apiKey,
-            baseURL: URL(string: baseURLString) ?? defaultBaseURL,
-            model: model,
-            whisperModelPath: whisperModelPath,
-            segmentationEnabled: envBool(named: "LLM_SEGMENTATION_ENABLED", in: contents, default: false),
-            translationEnabled: envBool(named: "LLM_TRANSLATION_ENABLED", in: contents, default: true),
-            segmentationBatchSize: envInt(named: "LLM_SEGMENTATION_BATCH_SIZE", in: contents, default: 160),
-            translationBatchCues: envInt(named: "LLM_TRANSLATION_BATCH_CUES", in: contents, default: 40),
-            translationContextCues: envInt(named: "LLM_TRANSLATION_CONTEXT_CUES", in: contents, default: 8)
+    private let userDefaults: UserDefaults
+    private let apiKeyStore: any SubtitleAPIKeyStore
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        apiKeyStore: any SubtitleAPIKeyStore = SubtitleKeychainAPIKeyStore()
+    ) {
+        self.userDefaults = userDefaults
+        self.apiKeyStore = apiKeyStore
+    }
+
+    func load() -> SubtitleSettings {
+        let defaults = SubtitleSettings.defaults
+        return SubtitleSettings(
+            whisperModelPath: string(for: Keys.whisperModelPath) ?? defaults.whisperModelPath,
+            apiKey: (try? apiKeyStore.loadAPIKey()) ?? "",
+            baseURLString: string(for: Keys.baseURLString) ?? defaults.baseURLString,
+            model: string(for: Keys.model) ?? defaults.model,
+            segmentationEnabled: bool(for: Keys.segmentationEnabled) ?? defaults.segmentationEnabled,
+            translationEnabled: bool(for: Keys.translationEnabled) ?? defaults.translationEnabled
         )
     }
 
-    private static func loadSecretsContents() throws -> String {
-        let candidates = [
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/Crypta/subtitle-secrets.env", isDirectory: false)
+    func save(_ settings: SubtitleSettings) throws {
+        userDefaults.set(settings.whisperModelPath, forKey: Keys.whisperModelPath)
+        userDefaults.set(settings.baseURLString, forKey: Keys.baseURLString)
+        userDefaults.set(settings.model, forKey: Keys.model)
+        userDefaults.set(settings.segmentationEnabled, forKey: Keys.segmentationEnabled)
+        userDefaults.set(settings.translationEnabled, forKey: Keys.translationEnabled)
+        try apiKeyStore.saveAPIKey(settings.apiKey)
+    }
+
+    private func string(for key: String) -> String? {
+        guard let value = userDefaults.string(forKey: key) else { return nil }
+        return value.isEmpty ? nil : value
+    }
+
+    private func bool(for key: String) -> Bool? {
+        userDefaults.object(forKey: key) == nil ? nil : userDefaults.bool(forKey: key)
+    }
+
+    private enum Keys {
+        static let whisperModelPath = "subtitle.whisperModelPath"
+        static let baseURLString = "subtitle.openRouterBaseURL"
+        static let model = "subtitle.openRouterModel"
+        static let segmentationEnabled = "subtitle.segmentationEnabled"
+        static let translationEnabled = "subtitle.translationEnabled"
+    }
+}
+
+nonisolated protocol SubtitleAPIKeyStore: Sendable {
+    func loadAPIKey() throws -> String
+    func saveAPIKey(_ apiKey: String) throws
+}
+
+nonisolated final class SubtitleKeychainAPIKeyStore: SubtitleAPIKeyStore, @unchecked Sendable {
+    private let service = "com.eli.Crypta.subtitle"
+    private let account = "openrouter-api-key"
+
+    func loadAPIKey() throws -> String {
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return ""
+        }
+        guard status == errSecSuccess, let data = item as? Data else {
+            throw CryptaError.keychainReadFailed(status)
+        }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    func saveAPIKey(_ apiKey: String) throws {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            let status = SecItemDelete(baseQuery() as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw CryptaError.keychainWriteFailed(status)
+            }
+            return
+        }
+
+        let data = Data(trimmed.utf8)
+        let query = baseQuery()
+        let attributes = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ] as [String: Any]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+        guard updateStatus == errSecItemNotFound else {
+            throw CryptaError.keychainWriteFailed(updateStatus)
+        }
+
+        var addQuery = query
+        addQuery.merge(attributes) { _, new in new }
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw CryptaError.keychainWriteFailed(addStatus)
+        }
+    }
+
+    private func baseQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
         ]
-        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
-            return try String(contentsOf: url, encoding: .utf8)
-        }
-        throw CryptaError.subtitleConfigurationMissing
-    }
-
-    private static func envValue(named key: String, in contents: String) -> String? {
-        for line in contents.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-            let assignment = trimmed.hasPrefix("export ") ? String(trimmed.dropFirst(7)) : trimmed
-            let parts = assignment.split(separator: "=", maxSplits: 1).map(String.init)
-            guard parts.count == 2, parts[0] == key else { continue }
-            return unquoted(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return nil
-    }
-
-    private static func unquoted(_ value: String) -> String {
-        guard value.count >= 2,
-              let first = value.first,
-              let last = value.last,
-              (first == "\"" && last == "\"") || (first == "'" && last == "'") else {
-            return value
-        }
-        return String(value.dropFirst().dropLast())
-    }
-
-    private static func envBool(named key: String, in contents: String, default defaultValue: Bool) -> Bool {
-        guard let value = envValue(named: key, in: contents) else { return defaultValue }
-        switch value.lowercased() {
-        case "1", "true", "yes", "on": return true
-        case "0", "false", "no", "off": return false
-        default: return defaultValue
-        }
-    }
-
-    private static func envInt(named key: String, in contents: String, default defaultValue: Int) -> Int {
-        guard let value = envValue(named: key, in: contents), let parsed = Int(value) else {
-            return defaultValue
-        }
-        return parsed
     }
 }

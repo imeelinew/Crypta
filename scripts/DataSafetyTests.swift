@@ -442,38 +442,31 @@ struct DataSafetyTests {
     }
 
     private static func testSubtitleConfigurationTranslatesByDefaultWhenKeyExists() throws {
-        let keyed = SubtitleConfiguration.load(
-            contents: """
-            WHISPER_MODEL_PATH="/tmp/crypta-whisper.bin"
-            LLM_OPENROUTER_API_KEY=sk-test
-            """
-        )
-        try expect(keyed.whisperModelPath == "/tmp/crypta-whisper.bin", "Whisper path should not require LLM config.")
-        try expect(keyed.canUseLLM, "API key should still be parsed when present.")
-        try expect(!keyed.segmentationEnabled, "LLM segmentation should require an explicit opt-in.")
-        try expect(keyed.translationEnabled, "LLM translation should default on when an API key exists.")
-        try expect(keyed.translationBatchCues == 40, "LLM translation batches should stay small enough for reliable long-video output.")
+        let store = try makeIsolatedSubtitleSettingsStore()
+        defer { store.cleanup() }
 
-        let localOnly = SubtitleConfiguration.load(contents: "")
+        let localOnly = SubtitleConfiguration.load(store: store.settingsStore)
         try expect(!localOnly.canUseLLM, "Missing API key should keep generation local-only.")
-        try expect(localOnly.translationEnabled, "Translation preference should still default on for future keyed configs.")
+        try expect(localOnly.translationEnabled, "Translation preference should default on for future keyed configs.")
+        try expect(!localOnly.segmentationEnabled, "LLM segmentation should require an explicit opt-in.")
 
-        let explicitLLM = SubtitleConfiguration.load(
-            contents: """
-            LLM_OPENROUTER_API_KEY=sk-test
-            LLM_SEGMENTATION_ENABLED=true
-            """
-        )
-        try expect(explicitLLM.segmentationEnabled, "Explicit segmentation opt-in was ignored.")
-        try expect(explicitLLM.translationEnabled, "Default translation with an API key was ignored.")
+        var settings = SubtitleSettings.defaults
+        settings.whisperModelPath = "/tmp/crypta-whisper.bin"
+        settings.apiKey = "sk-test"
+        settings.baseURLString = "https://example.test/v1/chat/completions"
+        settings.model = "test-model"
+        settings.segmentationEnabled = true
+        settings.translationEnabled = false
+        try store.settingsStore.save(settings)
 
-        let disabledTranslation = SubtitleConfiguration.load(
-            contents: """
-            LLM_OPENROUTER_API_KEY=sk-test
-            LLM_TRANSLATION_ENABLED=0
-            """
-        )
-        try expect(!disabledTranslation.translationEnabled, "Explicit translation opt-out was ignored.")
+        let keyed = SubtitleConfiguration.load(store: store.settingsStore)
+        try expect(keyed.whisperModelPath == "/tmp/crypta-whisper.bin", "Whisper path should not require LLM config.")
+        try expect(keyed.canUseLLM, "API key should be read from the subtitle key store.")
+        try expect(keyed.baseURL.absoluteString == "https://example.test/v1/chat/completions", "Base URL setting was ignored.")
+        try expect(keyed.model == "test-model", "Model setting was ignored.")
+        try expect(keyed.segmentationEnabled, "Explicit segmentation opt-in was ignored.")
+        try expect(!keyed.translationEnabled, "Explicit translation opt-out was ignored.")
+        try expect(keyed.translationBatchCues == 40, "LLM translation batches should stay small enough for reliable long-video output.")
     }
 
     private static func testSubtitleTranslationRepairsMissingIDs() async throws {
@@ -486,7 +479,9 @@ struct DataSafetyTests {
                 chineseLines: []
             )
         }
-        let configuration = SubtitleConfiguration.load(contents: "LLM_OPENROUTER_API_KEY=sk-test")
+        var settings = SubtitleSettings.defaults
+        settings.apiKey = "sk-test"
+        let configuration = SubtitleConfiguration(settings: settings)
         var requestedTargetIDs: [[Int]] = []
         let translated = try await SubtitleBilingualTranslator.translate(
             cues,
@@ -1127,6 +1122,22 @@ struct DataSafetyTests {
             durationSeconds: nil
         )
     }
+
+    private static func makeIsolatedSubtitleSettingsStore() throws -> IsolatedSubtitleSettingsStore {
+        let suiteName = "CryptaDataSafetyTests.\(UUID().uuidString)"
+        guard let userDefaults = UserDefaults(suiteName: suiteName) else {
+            throw TestFailure("Could not create isolated UserDefaults suite.")
+        }
+        userDefaults.removePersistentDomain(forName: suiteName)
+        return IsolatedSubtitleSettingsStore(
+            settingsStore: SubtitleSettingsStore(
+                userDefaults: userDefaults,
+                apiKeyStore: InMemorySubtitleAPIKeyStore()
+            ),
+            userDefaults: userDefaults,
+            suiteName: suiteName
+        )
+    }
 }
 
 private struct TestFailure: Error, CustomStringConvertible {
@@ -1134,6 +1145,28 @@ private struct TestFailure: Error, CustomStringConvertible {
 
     init(_ description: String) {
         self.description = description
+    }
+}
+
+private struct IsolatedSubtitleSettingsStore {
+    let settingsStore: SubtitleSettingsStore
+    let userDefaults: UserDefaults
+    let suiteName: String
+
+    func cleanup() {
+        userDefaults.removePersistentDomain(forName: suiteName)
+    }
+}
+
+private final class InMemorySubtitleAPIKeyStore: SubtitleAPIKeyStore, @unchecked Sendable {
+    private var apiKey = ""
+
+    func loadAPIKey() throws -> String {
+        apiKey
+    }
+
+    func saveAPIKey(_ apiKey: String) throws {
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

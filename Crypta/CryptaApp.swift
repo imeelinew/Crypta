@@ -30,6 +30,10 @@ struct CryptaApp: App {
             }
             CommandGroup(replacing: .saveItem) { }
         }
+
+        Settings {
+            CryptaSettingsView()
+        }
     }
 }
 
