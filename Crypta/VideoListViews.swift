@@ -91,48 +91,36 @@ struct VideoListPage: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Color.clear)
                         } else {
-                            List(selection: $library.selectedVideoIDs) {
-                                ForEach(library.visibleVideos) { video in
-                                    VideoRow(
-                                        video: video,
-                                        subtitleProgress: library.subtitleProgress(for: video)
-                                    )
-                                        .tag(video.id)
-                                        .listRowBackground(Color.clear)
-                                        .contextMenu {
-                                            if library.canGenerateSubtitles(for: video) {
-                                                Button(library.subtitleActionTitle(for: video), systemImage: "captions.bubble") {
-                                                    library.requestGenerateSubtitles(video)
-                                                }
-                                                Divider()
-                                            }
-                                            Button("重命名") {
-                                                library.requestRename(video)
-                                            }
-                                            Button("删除") {
-                                                library.confirmDeleteVideo(video)
-                                            }
-                                        }
+                            AppKitVideoList(
+                                videos: library.visibleVideos,
+                                selectedVideoIDs: library.selectedVideoIDs,
+                                subtitleJob: library.subtitleJob,
+                                canGenerateSubtitles: { library.canGenerateSubtitles(for: $0) },
+                                subtitleActionTitle: { library.subtitleActionTitle(for: $0) },
+                                onSelectionChange: { ids, primaryID in
+                                    library.selectVideoIDs(ids, primaryID: primaryID)
+                                },
+                                onDoubleClick: { video in
+                                    library.selectOnly(video)
+                                    Task { await library.play(video) }
+                                },
+                                onSpacePreview: {
+                                    Task { await library.previewSelectedVideo() }
+                                },
+                                onSelectAll: {
+                                    library.selectAllVisibleVideos()
+                                },
+                                onGenerateSubtitles: { video in
+                                    library.requestGenerateSubtitles(video)
+                                },
+                                onRename: { video in
+                                    library.requestRename(video)
+                                },
+                                onDelete: { video in
+                                    library.confirmDeleteVideo(video)
                                 }
-                            }
-                            .listStyle(.inset)
-                            .scrollContentBackground(.hidden)
-                            .background {
-                                Color.clear
-                                VideoListInteractionInstaller(
-                                    videos: library.visibleVideos,
-                                    onDoubleClick: { video in
-                                        library.selectOnly(video)
-                                        Task { await library.play(video) }
-                                    },
-                                    onSpacePreview: {
-                                        Task { await library.previewSelectedVideo() }
-                                    },
-                                    onSelectAll: {
-                                        library.selectAllVisibleVideos()
-                                    }
-                                )
-                            }
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
                 }
@@ -285,77 +273,192 @@ private struct LockedEncryptedSectionView: View {
     }
 }
 
-private struct VideoListInteractionInstaller: NSViewRepresentable {
+private struct AppKitVideoList: NSViewRepresentable {
     let videos: [CryptaVideo]
+    let selectedVideoIDs: Set<CryptaVideo.ID>
+    let subtitleJob: SubtitleJobProgress?
+    let canGenerateSubtitles: (CryptaVideo) -> Bool
+    let subtitleActionTitle: (CryptaVideo) -> String
+    let onSelectionChange: (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void
     let onDoubleClick: (CryptaVideo) -> Void
     let onSpacePreview: () -> Void
     let onSelectAll: () -> Void
+    let onGenerateSubtitles: (CryptaVideo) -> Void
+    let onRename: (CryptaVideo) -> Void
+    let onDelete: (CryptaVideo) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             videos: videos,
+            selectedVideoIDs: selectedVideoIDs,
+            subtitleJob: subtitleJob,
+            canGenerateSubtitles: canGenerateSubtitles,
+            subtitleActionTitle: subtitleActionTitle,
+            onSelectionChange: onSelectionChange,
             onDoubleClick: onDoubleClick,
             onSpacePreview: onSpacePreview,
-            onSelectAll: onSelectAll
+            onSelectAll: onSelectAll,
+            onGenerateSubtitles: onGenerateSubtitles,
+            onRename: onRename,
+            onDelete: onDelete
         )
     }
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        DispatchQueue.main.async {
-            context.coordinator.attach(from: view)
-        }
-        return view
+    func makeNSView(context: Context) -> NSScrollView {
+        context.coordinator.makeScrollView()
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        context.coordinator.videos = videos
-        context.coordinator.onDoubleClick = onDoubleClick
-        context.coordinator.onSpacePreview = onSpacePreview
-        context.coordinator.onSelectAll = onSelectAll
-        DispatchQueue.main.async {
-            context.coordinator.attach(from: view)
-        }
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.update(
+            videos: videos,
+            selectedVideoIDs: selectedVideoIDs,
+            subtitleJob: subtitleJob,
+            canGenerateSubtitles: canGenerateSubtitles,
+            subtitleActionTitle: subtitleActionTitle,
+            onSelectionChange: onSelectionChange,
+            onDoubleClick: onDoubleClick,
+            onSpacePreview: onSpacePreview,
+            onSelectAll: onSelectAll,
+            onGenerateSubtitles: onGenerateSubtitles,
+            onRename: onRename,
+            onDelete: onDelete
+        )
     }
 
-    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
-        coordinator.stopMonitoringSpaceKey()
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, VideoTableViewActionDelegate {
         var videos: [CryptaVideo]
+        var selectedVideoIDs: Set<CryptaVideo.ID>
+        var subtitleJob: SubtitleJobProgress?
+        var canGenerateSubtitles: (CryptaVideo) -> Bool
+        var subtitleActionTitle: (CryptaVideo) -> String
+        var onSelectionChange: (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void
         var onDoubleClick: (CryptaVideo) -> Void
         var onSpacePreview: () -> Void
         var onSelectAll: () -> Void
-        private weak var tableView: NSTableView?
-        private var keyMonitor: Any?
+        var onGenerateSubtitles: (CryptaVideo) -> Void
+        var onRename: (CryptaVideo) -> Void
+        var onDelete: (CryptaVideo) -> Void
+        private weak var tableView: VideoTableView?
+        private var isSyncingSelection = false
 
         init(
             videos: [CryptaVideo],
+            selectedVideoIDs: Set<CryptaVideo.ID>,
+            subtitleJob: SubtitleJobProgress?,
+            canGenerateSubtitles: @escaping (CryptaVideo) -> Bool,
+            subtitleActionTitle: @escaping (CryptaVideo) -> String,
+            onSelectionChange: @escaping (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void,
             onDoubleClick: @escaping (CryptaVideo) -> Void,
             onSpacePreview: @escaping () -> Void,
-            onSelectAll: @escaping () -> Void
+            onSelectAll: @escaping () -> Void,
+            onGenerateSubtitles: @escaping (CryptaVideo) -> Void,
+            onRename: @escaping (CryptaVideo) -> Void,
+            onDelete: @escaping (CryptaVideo) -> Void
         ) {
             self.videos = videos
+            self.selectedVideoIDs = selectedVideoIDs
+            self.subtitleJob = subtitleJob
+            self.canGenerateSubtitles = canGenerateSubtitles
+            self.subtitleActionTitle = subtitleActionTitle
+            self.onSelectionChange = onSelectionChange
             self.onDoubleClick = onDoubleClick
             self.onSpacePreview = onSpacePreview
             self.onSelectAll = onSelectAll
+            self.onGenerateSubtitles = onGenerateSubtitles
+            self.onRename = onRename
+            self.onDelete = onDelete
             super.init()
         }
 
-        func attach(from view: NSView) {
-            guard let tableView = view.nearestTableView() else { return }
-            guard self.tableView !== tableView else {
-                startMonitoringSpaceKey()
-                return
-            }
+        func makeScrollView() -> NSScrollView {
+            let scrollView = NSScrollView()
+            scrollView.drawsBackground = false
+            scrollView.hasVerticalScroller = true
+            scrollView.hasHorizontalScroller = false
+            scrollView.autohidesScrollers = true
+
+            let tableView = VideoTableView()
             self.tableView = tableView
-            tableView.applyTransparentListBackground()
+            tableView.actionDelegate = self
+            tableView.delegate = self
+            tableView.dataSource = self
+            tableView.headerView = nil
+            tableView.backgroundColor = .clear
+            tableView.selectionHighlightStyle = .regular
+            tableView.rowHeight = 58
+            tableView.intercellSpacing = NSSize(width: 0, height: 0)
             tableView.allowsMultipleSelection = true
+            tableView.allowsEmptySelection = true
             tableView.target = self
             tableView.doubleAction = #selector(handleDoubleClick(_:))
-            startMonitoringSpaceKey()
+
+            let column = NSTableColumn(identifier: .videoListMainColumn)
+            column.resizingMask = .autoresizingMask
+            tableView.addTableColumn(column)
+
+            scrollView.documentView = tableView
+            syncSelection(in: tableView)
+            return scrollView
+        }
+
+        func update(
+            videos: [CryptaVideo],
+            selectedVideoIDs: Set<CryptaVideo.ID>,
+            subtitleJob: SubtitleJobProgress?,
+            canGenerateSubtitles: @escaping (CryptaVideo) -> Bool,
+            subtitleActionTitle: @escaping (CryptaVideo) -> String,
+            onSelectionChange: @escaping (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void,
+            onDoubleClick: @escaping (CryptaVideo) -> Void,
+            onSpacePreview: @escaping () -> Void,
+            onSelectAll: @escaping () -> Void,
+            onGenerateSubtitles: @escaping (CryptaVideo) -> Void,
+            onRename: @escaping (CryptaVideo) -> Void,
+            onDelete: @escaping (CryptaVideo) -> Void
+        ) {
+            let shouldReload = self.videos != videos || self.subtitleJob != subtitleJob
+            self.videos = videos
+            self.selectedVideoIDs = selectedVideoIDs
+            self.subtitleJob = subtitleJob
+            self.canGenerateSubtitles = canGenerateSubtitles
+            self.subtitleActionTitle = subtitleActionTitle
+            self.onSelectionChange = onSelectionChange
+            self.onDoubleClick = onDoubleClick
+            self.onSpacePreview = onSpacePreview
+            self.onSelectAll = onSelectAll
+            self.onGenerateSubtitles = onGenerateSubtitles
+            self.onRename = onRename
+            self.onDelete = onDelete
+            guard let tableView else { return }
+            if shouldReload {
+                tableView.reloadData()
+            }
+            syncSelection(in: tableView)
+        }
+
+        func numberOfRows(in tableView: NSTableView) -> Int {
+            videos.count
+        }
+
+        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard videos.indices.contains(row) else { return nil }
+            let video = videos[row]
+            let cell = tableView.makeView(
+                withIdentifier: VideoTableCellView.reuseIdentifier,
+                owner: self
+            ) as? VideoTableCellView ?? VideoTableCellView()
+            cell.configure(video: video, progress: subtitleProgress(for: video))
+            loadThumbnail(for: video, into: cell)
+            return cell
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !isSyncingSelection,
+                  let tableView = notification.object as? NSTableView else { return }
+            let selectedIDs = Set(tableView.selectedRowIndexes.compactMap { row in
+                videos.indices.contains(row) ? videos[row].id : nil
+            })
+            let primaryID = videos.indices.contains(tableView.selectedRow) ? videos[tableView.selectedRow].id : nil
+            onSelectionChange(selectedIDs, primaryID)
         }
 
         @objc private func handleDoubleClick(_ sender: NSTableView) {
@@ -364,62 +467,240 @@ private struct VideoListInteractionInstaller: NSViewRepresentable {
             onDoubleClick(videos[row])
         }
 
-        private func startMonitoringSpaceKey() {
-            guard keyMonitor == nil else { return }
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                let shouldHandle = MainActor.assumeIsolated {
-                    guard let self else { return false }
-                    return self.shouldHandleSpaceKey(event)
-                }
-                guard shouldHandle else {
-                    return event
-                }
-                MainActor.assumeIsolated {
-                    self?.handleKeyEvent(event)
-                }
-                return nil
+        func videoTableViewDidPressSpace(_ tableView: VideoTableView) {
+            guard tableView.selectedRow >= 0 else { return }
+            onSpacePreview()
+        }
+
+        func videoTableViewDidPressSelectAll(_ tableView: VideoTableView) {
+            tableView.selectAll(nil)
+            onSelectAll()
+        }
+
+        func videoTableView(_ tableView: VideoTableView, menuFor event: NSEvent) -> NSMenu? {
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            let row = tableView.row(at: point)
+            guard videos.indices.contains(row) else { return nil }
+            if !tableView.selectedRowIndexes.contains(row) {
+                tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+            let video = videos[row]
+            let menu = NSMenu()
+            if canGenerateSubtitles(video) {
+                menu.addItem(menuItem(
+                    title: subtitleActionTitle(video),
+                    action: #selector(generateSubtitlesFromMenu(_:)),
+                    video: video
+                ))
+                menu.addItem(.separator())
+            }
+            menu.addItem(menuItem(title: "重命名", action: #selector(renameFromMenu(_:)), video: video))
+            menu.addItem(menuItem(title: "删除", action: #selector(deleteFromMenu(_:)), video: video))
+            return menu
+        }
+
+        @objc private func generateSubtitlesFromMenu(_ sender: NSMenuItem) {
+            guard let video = sender.representedObject as? CryptaVideo else { return }
+            onGenerateSubtitles(video)
+        }
+
+        @objc private func renameFromMenu(_ sender: NSMenuItem) {
+            guard let video = sender.representedObject as? CryptaVideo else { return }
+            onRename(video)
+        }
+
+        @objc private func deleteFromMenu(_ sender: NSMenuItem) {
+            guard let video = sender.representedObject as? CryptaVideo else { return }
+            onDelete(video)
+        }
+
+        private func syncSelection(in tableView: NSTableView) {
+            let selectedRows = IndexSet(videos.indices.filter { selectedVideoIDs.contains(videos[$0].id) })
+            guard selectedRows != tableView.selectedRowIndexes else { return }
+            isSyncingSelection = true
+            tableView.selectRowIndexes(selectedRows, byExtendingSelection: false)
+            isSyncingSelection = false
+        }
+
+        private func loadThumbnail(for video: CryptaVideo, into cell: VideoTableCellView) {
+            if let cachedThumbnail = VideoThumbnailLoader.cachedThumbnail(for: video) {
+                cell.setThumbnail(cachedThumbnail, for: video)
+                return
+            }
+            cell.setPlaceholder(for: video)
+            Task { @MainActor in
+                let thumbnail = await VideoThumbnailLoader.thumbnail(for: video)
+                guard cell.videoID == video.id else { return }
+                cell.setThumbnail(thumbnail, for: video)
             }
         }
 
-        private func shouldHandleSpaceKey(_ event: NSEvent) -> Bool {
-            guard isSpaceKeyEvent(event) || isSelectAllEvent(event), let tableView, event.window === tableView.window else {
-                return false
-            }
-            guard tableView.window?.firstResponder is NSTextView == false else {
-                return false
-            }
-            return isSelectAllEvent(event) || tableView.selectedRow >= 0
+        private func subtitleProgress(for video: CryptaVideo) -> SubtitleJobProgress? {
+            subtitleJob?.videoID == video.id ? subtitleJob : nil
         }
 
-        private func handleKeyEvent(_ event: NSEvent) {
-            if isSelectAllEvent(event) {
-                onSelectAll()
-            } else {
-                onSpacePreview()
-            }
+        private func menuItem(title: String, action: Selector, video: CryptaVideo) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = video
+            return item
+        }
+    }
+}
+
+private protocol VideoTableViewActionDelegate: AnyObject {
+    func videoTableViewDidPressSpace(_ tableView: VideoTableView)
+    func videoTableViewDidPressSelectAll(_ tableView: VideoTableView)
+    func videoTableView(_ tableView: VideoTableView, menuFor event: NSEvent) -> NSMenu?
+}
+
+private final class VideoTableView: NSTableView {
+    weak var actionDelegate: VideoTableViewActionDelegate?
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting(.capsLock)
+        if flags.isEmpty, event.keyCode == 49 || event.charactersIgnoringModifiers == " " {
+            actionDelegate?.videoTableViewDidPressSpace(self)
+            return
+        }
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "a" {
+            actionDelegate?.videoTableViewDidPressSelectAll(self)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        actionDelegate?.videoTableView(self, menuFor: event)
+    }
+}
+
+private final class VideoTableCellView: NSTableCellView {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("VideoTableCell")
+
+    private let thumbnailImageView = NSImageView()
+    private let titleField = NSTextField(labelWithString: "")
+    private let detailField = NSTextField(labelWithString: "")
+    private let statusImageView = NSImageView()
+    private let progressIndicator = NSProgressIndicator()
+    private let progressField = NSTextField(labelWithString: "")
+    private let separator = NSBox()
+    var videoID: CryptaVideo.ID?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        identifier = Self.reuseIdentifier
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        identifier = Self.reuseIdentifier
+        setup()
+    }
+
+    func configure(video: CryptaVideo, progress: SubtitleJobProgress?) {
+        videoID = video.id
+        titleField.stringValue = video.displayName
+        detailField.stringValue = video.detailLine
+        if let progress {
+            statusImageView.isHidden = true
+            progressIndicator.isHidden = false
+            progressField.isHidden = false
+            progressIndicator.doubleValue = Double(progress.percent)
+            progressField.stringValue = "\(progress.percent)% \(progress.desc)"
+        } else {
+            progressIndicator.isHidden = true
+            progressField.isHidden = true
+            statusImageView.isHidden = !video.hasEmbeddedSubtitles
+            statusImageView.image = NSImage(
+                systemSymbolName: "captions.bubble",
+                accessibilityDescription: "已有字幕"
+            )
+        }
+    }
+
+    func setThumbnail(_ thumbnail: NSImage?, for video: CryptaVideo) {
+        if let thumbnail {
+            thumbnailImageView.image = thumbnail
+            thumbnailImageView.contentTintColor = nil
+        } else {
+            setPlaceholder(for: video)
+        }
+    }
+
+    func setPlaceholder(for video: CryptaVideo) {
+        let symbolName = video.isImage ? "photo.fill" : "video.fill"
+        thumbnailImageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        thumbnailImageView.contentTintColor = .secondaryLabelColor
+    }
+
+    private func setup() {
+        wantsLayer = true
+        thumbnailImageView.imageScaling = .scaleProportionallyUpOrDown
+        thumbnailImageView.wantsLayer = true
+        thumbnailImageView.layer?.cornerRadius = 6
+        thumbnailImageView.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.12).cgColor
+
+        titleField.font = .systemFont(ofSize: 13, weight: .medium)
+        titleField.lineBreakMode = .byTruncatingTail
+        detailField.font = .systemFont(ofSize: 11)
+        detailField.textColor = .secondaryLabelColor
+        detailField.lineBreakMode = .byTruncatingTail
+
+        statusImageView.symbolConfiguration = .init(pointSize: 13, weight: .medium)
+        statusImageView.contentTintColor = .secondaryLabelColor
+        statusImageView.imageScaling = .scaleProportionallyUpOrDown
+
+        progressIndicator.isIndeterminate = false
+        progressIndicator.minValue = 0
+        progressIndicator.maxValue = 100
+        progressIndicator.controlSize = .small
+        progressField.font = .systemFont(ofSize: 10)
+        progressField.textColor = .secondaryLabelColor
+        progressField.alignment = .right
+        progressField.lineBreakMode = .byTruncatingTail
+
+        separator.boxType = .separator
+
+        [thumbnailImageView, titleField, detailField, statusImageView, progressIndicator, progressField, separator].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            addSubview($0)
         }
 
-        private func isSpaceKeyEvent(_ event: NSEvent) -> Bool {
-            let flags = event.modifierFlags
-                .intersection(.deviceIndependentFlagsMask)
-                .subtracting(.capsLock)
-            guard flags.isEmpty else { return false }
-            return event.keyCode == 49 || event.charactersIgnoringModifiers == " "
-        }
+        NSLayoutConstraint.activate([
+            thumbnailImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            thumbnailImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            thumbnailImageView.widthAnchor.constraint(equalToConstant: 64),
+            thumbnailImageView.heightAnchor.constraint(equalToConstant: 38),
 
-        private func isSelectAllEvent(_ event: NSEvent) -> Bool {
-            let flags = event.modifierFlags
-                .intersection(.deviceIndependentFlagsMask)
-                .subtracting(.capsLock)
-            return flags == .command && event.charactersIgnoringModifiers?.lowercased() == "a"
-        }
+            titleField.leadingAnchor.constraint(equalTo: thumbnailImageView.trailingAnchor, constant: 12),
+            titleField.trailingAnchor.constraint(lessThanOrEqualTo: statusImageView.leadingAnchor, constant: -12),
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 10),
 
-        func stopMonitoringSpaceKey() {
-            if let keyMonitor {
-                NSEvent.removeMonitor(keyMonitor)
-                self.keyMonitor = nil
-            }
-        }
+            detailField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            detailField.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
+            detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 3),
+
+            statusImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            statusImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            statusImageView.widthAnchor.constraint(equalToConstant: 18),
+            statusImageView.heightAnchor.constraint(equalToConstant: 18),
+
+            progressIndicator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            progressIndicator.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -6),
+            progressIndicator.widthAnchor.constraint(equalToConstant: 92),
+
+            progressField.trailingAnchor.constraint(equalTo: progressIndicator.trailingAnchor),
+            progressField.topAnchor.constraint(equalTo: progressIndicator.bottomAnchor, constant: 3),
+            progressField.widthAnchor.constraint(equalToConstant: 150),
+
+            separator.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
     }
 }
 
@@ -469,101 +750,8 @@ private extension NSTableView {
     }
 }
 
-struct VideoRow: View {
-    let video: CryptaVideo
-    let subtitleProgress: SubtitleJobProgress?
-    @State private var thumbnail: NSImage?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ThumbnailView(video: video, thumbnail: thumbnail)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(video.displayName)
-                    .lineLimit(1)
-                Text(video.detailLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            if let subtitleProgress {
-                SubtitleProgressView(progress: subtitleProgress)
-            } else if video.hasEmbeddedSubtitles {
-                Image(systemName: "captions.bubble")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .help("已有字幕")
-            }
-        }
-        .padding(.vertical, 5)
-        .onAppear {
-            thumbnail = VideoThumbnailLoader.cachedThumbnail(for: video)
-        }
-        .task(id: video.id) {
-            if let cachedThumbnail = VideoThumbnailLoader.cachedThumbnail(for: video) {
-                thumbnail = cachedThumbnail
-                return
-            }
-            thumbnail = await VideoThumbnailLoader.thumbnail(for: video)
-        }
-    }
-}
-
-struct SubtitleProgressView: View {
-    let progress: SubtitleJobProgress
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 4) {
-            HStack(spacing: 6) {
-                Text("\(progress.percent)%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                ProgressView(value: Double(progress.percent), total: 100)
-                    .frame(width: 72)
-            }
-            Text(progress.desc)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .frame(width: 150, alignment: .trailing)
-    }
-}
-
-struct ThumbnailView: View {
-    let video: CryptaVideo
-    let thumbnail: NSImage?
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.12))
-
-            if let thumbnail {
-                Image(nsImage: thumbnail)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 64, height: 38)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else {
-                Image(systemName: placeholderSystemImage)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.secondary)
-            }
-        }
-        .frame(width: 64, height: 38)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    private var placeholderSystemImage: String {
-        if video.isImage {
-            return "photo.fill"
-        }
-        return "video.fill"
-    }
+private extension NSUserInterfaceItemIdentifier {
+    static let videoListMainColumn = NSUserInterfaceItemIdentifier("VideoListMainColumn")
 }
 
 struct RenameVideoSheet: View {

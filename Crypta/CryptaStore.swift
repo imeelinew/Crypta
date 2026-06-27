@@ -377,6 +377,30 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         }
     }
 
+    func materializeImageGroup(
+        _ videos: [CryptaVideo],
+        to directoryURL: URL
+    ) throws -> [CryptaVideo.ID: URL] {
+        try locations.prepareDirectories()
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        var result: [CryptaVideo.ID: URL] = [:]
+        for video in videos where video.mediaType == .image {
+            do {
+                let destinationFileName = uniqueFileName(
+                    displayName: video.displayName,
+                    extensionName: video.originalExtension,
+                    in: directoryURL
+                )
+                let destinationURL = directoryURL.appendingPathComponent(destinationFileName, isDirectory: false)
+                try materializeMedia(video, to: destinationURL)
+                result[video.id] = destinationURL
+            } catch {
+                continue
+            }
+        }
+        return result
+    }
+
     func inMemoryMediaDataSource(for video: CryptaVideo) throws -> EncryptedMediaDataSource {
         try locations.prepareDirectories()
         guard video.storageState == .encrypted,
@@ -387,7 +411,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         return try EncryptedMediaDataSource(
             sourceURL: sourceURL,
             originalExtension: video.originalExtension,
-            byteCount: video.byteCount,
             key: existingKeyForDecryption()
         )
     }
@@ -399,26 +422,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
             throw CryptaError.missingVideoFile
         }
         return locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
-    }
-
-    func materializeImageGroup(
-        _ videos: [CryptaVideo],
-        to directoryURL: URL
-    ) throws -> [CryptaVideo.ID: URL] {
-        try locations.prepareDirectories()
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        var result: [CryptaVideo.ID: URL] = [:]
-        for video in videos where video.mediaType == .image {
-            let destinationFileName = uniqueFileName(
-                displayName: video.displayName,
-                extensionName: video.originalExtension,
-                in: directoryURL
-            )
-            let destinationURL = directoryURL.appendingPathComponent(destinationFileName, isDirectory: false)
-            try materializeMedia(video, to: destinationURL)
-            result[video.id] = destinationURL
-        }
-        return result
     }
 
     func loadThumbnailData(for video: CryptaVideo) throws -> Data? {

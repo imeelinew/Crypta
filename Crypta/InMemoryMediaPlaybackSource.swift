@@ -26,16 +26,16 @@ nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
     init(
         sourceURL: URL,
         originalExtension: String,
-        byteCount: Int64,
         key: SymmetricKey,
         maximumCacheBytes: Int = 64 * 1024 * 1024
     ) throws {
         self.sourceURL = sourceURL
-        self.byteCount = byteCount
         self.key = key
         self.maximumCacheBytes = maximumCacheBytes
         contentTypeIdentifier = Self.contentTypeIdentifier(for: originalExtension)
-        chunks = try Self.scanChunks(in: sourceURL, expectedByteCount: byteCount)
+        chunks = try Self.scanChunks(in: sourceURL)
+        self.byteCount = chunks.reduce(Int64(0)) { $0 + Int64($1.plaintextLength) }
+        guard self.byteCount > 0 else { throw CryptaError.invalidEncryptedFile }
     }
 
     func data(offset: Int64, length: Int) throws -> Data {
@@ -126,7 +126,7 @@ nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
         }
     }
 
-    private static func scanChunks(in sourceURL: URL, expectedByteCount: Int64) throws -> [Chunk] {
+    private static func scanChunks(in sourceURL: URL) throws -> [Chunk] {
         let input = try FileHandle(forReadingFrom: sourceURL)
         defer { try? input.close() }
 
@@ -158,9 +158,6 @@ nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
             encryptedOffset += UInt64(4 + encryptedLength)
         }
 
-        guard plaintextOffset == expectedByteCount else {
-            throw CryptaError.invalidEncryptedFile
-        }
         return chunks
     }
 
@@ -190,13 +187,19 @@ nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
 
 final class InMemoryMediaPlaybackSource: NSObject {
     private static let scheme = "crypta-memory-media"
+    private static let defaultResponseChunkBytes = 1024 * 1024
 
     private let dataSource: EncryptedMediaDataSource
     private let queue = DispatchQueue(label: "app.crypta.memory-media-loader")
+    private let responseChunkBytes: Int
     private var asset: AVURLAsset?
 
-    init(dataSource: EncryptedMediaDataSource) {
+    init(
+        dataSource: EncryptedMediaDataSource,
+        responseChunkBytes: Int = InMemoryMediaPlaybackSource.defaultResponseChunkBytes
+    ) {
         self.dataSource = dataSource
+        self.responseChunkBytes = max(64 * 1024, responseChunkBytes)
     }
 
     func makePlayerItem(for video: CryptaVideo) -> AVPlayerItem {
@@ -238,10 +241,15 @@ extension InMemoryMediaPlaybackSource: AVAssetResourceLoaderDelegate {
                     ? dataRequest.currentOffset
                     : dataRequest.requestedOffset
                 let availableLength = max(0, dataSource.byteCount - requestedOffset)
-                let requestedLength = min(Int64(dataRequest.requestedLength), availableLength)
-                if requestedLength > 0 {
-                    let data = try dataSource.data(offset: requestedOffset, length: Int(requestedLength))
+                var remainingLength = min(Int64(dataRequest.requestedLength), availableLength)
+                var offset = requestedOffset
+                while remainingLength > 0 {
+                    let length = min(Int64(responseChunkBytes), remainingLength)
+                    let data = try dataSource.data(offset: offset, length: Int(length))
+                    guard !data.isEmpty else { throw CryptaError.invalidEncryptedFile }
                     dataRequest.respond(with: data)
+                    offset += Int64(data.count)
+                    remainingLength -= Int64(data.count)
                 }
             }
 

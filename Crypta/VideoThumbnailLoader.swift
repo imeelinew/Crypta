@@ -95,7 +95,7 @@ enum VideoThumbnailLoader {
         return jpegData(from: image)
     }
 
-    static func duration(from url: URL) -> Double? {
+    nonisolated static func duration(from url: URL) -> Double? {
         let value = try? ffprobeDuration(from: url)
         guard let value, value.isFinite, value > 0 else { return nil }
         return value
@@ -145,7 +145,7 @@ enum VideoThumbnailLoader {
         return image
     }
 
-    private static func ffprobeDuration(from url: URL) throws -> Double {
+    nonisolated private static func ffprobeDuration(from url: URL) throws -> Double {
         guard let ffprobeURL = ffprobeExecutableURL() else {
             throw CryptaError.thumbnailFailed
         }
@@ -187,7 +187,7 @@ enum VideoThumbnailLoader {
             .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    private static func ffprobeExecutableURL() -> URL? {
+    nonisolated private static func ffprobeExecutableURL() -> URL? {
         let fileManager = FileManager.default
         let candidates = [
             "/opt/homebrew/bin/ffprobe",

@@ -37,7 +37,6 @@ final class DecryptedMediaSessionManager {
     private struct Resource {
         let directoryURL: URL
         var leaseCount: Int
-        var deleteWhenUnused: Bool
     }
 
     private struct ImageGroupSnapshot: Sendable {
@@ -60,7 +59,6 @@ final class DecryptedMediaSessionManager {
     private var imageGroupSnapshots: [String: ImageGroupSnapshot] = [:]
     private var imageGroupTasks: [String: Task<ImageGroupSnapshot, Error>] = [:]
     private var imageGroupTaskIDs: [String: UUID] = [:]
-    private var imageGroupVersions: [String: Int] = [:]
 
     init(cacheRoot: URL, fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -114,49 +112,36 @@ final class DecryptedMediaSessionManager {
 
         resources[resourceID] = Resource(
             directoryURL: directoryURL,
-            leaseCount: 0,
-            deleteWhenUnused: true
+            leaseCount: 0
         )
         return makeLease(resourceID: resourceID, url: fileURL)
     }
 
-    func prepareImageGroup(
-        groupID: String,
-        videos: [CryptaVideo],
-        store: CryptaStore
-    ) async throws {
-        _ = try await imageGroupSnapshot(groupID: groupID, videos: videos, store: store)
-    }
-
-    func acquireImageLease(
+    func acquireImageGroupLease(
         for video: CryptaVideo,
         groupVideos: [CryptaVideo],
         store: CryptaStore
     ) async throws -> DecryptedMediaLease {
         let groupID = video.libraryKind.rawValue
-
-        for _ in 0..<2 {
-            let snapshot = try await imageGroupSnapshot(
-                groupID: groupID,
-                videos: groupVideos,
-                store: store
-            )
-            if let fileURL = snapshot.fileURLsByVideoID[video.id],
-               fileManager.fileExists(atPath: fileURL.path) {
-                return makeLease(resourceID: snapshot.resourceID, url: fileURL)
-            }
+        let snapshot = try await imageGroupSnapshot(groupID: groupID, videos: groupVideos, store: store)
+        guard let fileURL = snapshot.fileURLsByVideoID[video.id],
+              fileManager.fileExists(atPath: fileURL.path) else {
             invalidateImageGroup(groupID)
+            let rebuilt = try await imageGroupSnapshot(groupID: groupID, videos: groupVideos, store: store)
+            guard let rebuiltURL = rebuilt.fileURLsByVideoID[video.id],
+                  fileManager.fileExists(atPath: rebuiltURL.path) else {
+                throw CryptaError.missingVideoFile
+            }
+            return makeLease(resourceID: rebuilt.resourceID, url: rebuiltURL)
         }
-
-        throw CryptaError.missingVideoFile
+        return makeLease(resourceID: snapshot.resourceID, url: fileURL)
     }
 
     func invalidateImageGroup(_ groupID: String) {
-        imageGroupVersions[groupID, default: 0] += 1
         imageGroupTasks.removeValue(forKey: groupID)?.cancel()
         imageGroupTaskIDs.removeValue(forKey: groupID)
         guard let snapshot = imageGroupSnapshots.removeValue(forKey: groupID) else { return }
-        discardResourceWhenUnused(snapshot.resourceID)
+        deleteResourceIfUnused(snapshot.resourceID)
     }
 
     fileprivate func releaseLease(_ leaseID: UUID) {
@@ -187,9 +172,8 @@ final class DecryptedMediaSessionManager {
             return try await task.value
         }
 
-        let version = imageGroupVersions[groupID, default: 0]
-        let taskID = UUID()
         let generationID = UUID()
+        let taskID = UUID()
         let stagingDirectory = sessionDirectory
             .appendingPathComponent("Staging", isDirectory: true)
             .appendingPathComponent(generationID.uuidString, isDirectory: true)
@@ -200,7 +184,6 @@ final class DecryptedMediaSessionManager {
 
         let task = Task<ImageGroupSnapshot, Error> { [weak self] in
             guard let self else { throw CancellationError() }
-
             let prepared = try await Task.detached(priority: .userInitiated) {
                 let mapping = try store.materializeImageGroup(videos, to: stagingDirectory)
                 try FileManager.default.createDirectory(
@@ -211,30 +194,19 @@ final class DecryptedMediaSessionManager {
                 let movedMapping = mapping.mapValues {
                     finalDirectory.appendingPathComponent($0.lastPathComponent, isDirectory: false)
                 }
-                return PreparedImageGroup(
-                    directoryURL: finalDirectory,
-                    fileURLsByVideoID: movedMapping
-                )
+                return PreparedImageGroup(directoryURL: finalDirectory, fileURLsByVideoID: movedMapping)
             }.value
 
             do {
                 try Task.checkCancellation()
-                guard self.imageGroupVersions[groupID, default: 0] == version else {
-                    throw CancellationError()
-                }
-
                 let resourceID = UUID()
-                self.resources[resourceID] = Resource(
-                    directoryURL: prepared.directoryURL,
-                    leaseCount: 0,
-                    deleteWhenUnused: false
-                )
+                self.resources[resourceID] = Resource(directoryURL: prepared.directoryURL, leaseCount: 0)
                 let snapshot = ImageGroupSnapshot(
                     resourceID: resourceID,
                     fileURLsByVideoID: prepared.fileURLsByVideoID
                 )
                 if let previous = self.imageGroupSnapshots.updateValue(snapshot, forKey: groupID) {
-                    self.discardResourceWhenUnused(previous.resourceID)
+                    self.deleteResourceIfUnused(previous.resourceID)
                 }
                 return snapshot
             } catch {
@@ -273,16 +245,8 @@ final class DecryptedMediaSessionManager {
         return DecryptedMediaLease(id: leaseID, url: url, manager: self)
     }
 
-    private func discardResourceWhenUnused(_ resourceID: UUID) {
-        guard var resource = resources[resourceID] else { return }
-        resource.deleteWhenUnused = true
-        resources[resourceID] = resource
-        deleteResourceIfUnused(resourceID)
-    }
-
     private func deleteResourceIfUnused(_ resourceID: UUID) {
         guard let resource = resources[resourceID],
-              resource.deleteWhenUnused,
               resource.leaseCount == 0 else {
             return
         }

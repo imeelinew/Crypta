@@ -178,17 +178,6 @@ final class CryptaLibrary {
         }
 
         unlockedGroupIDs.insert(group.id)
-        if group.mediaType == .image {
-            let store = self.store
-            let groupVideos = videos.filter {
-                $0.libraryKind.rawValue == group.id && $0.mediaType == .image
-            }
-            try? await mediaSessions.prepareImageGroup(
-                groupID: group.id,
-                videos: groupVideos,
-                store: store
-            )
-        }
         if group.encryptionLevel == .extended, !NSApp.isActive {
             scheduleExtendedLock()
         }
@@ -333,12 +322,9 @@ final class CryptaLibrary {
             defer { isWorking = false }
 
             if video.isImage {
-                let groupVideos = videos.filter {
-                    $0.libraryKind.rawValue == video.libraryKind.rawValue && $0.mediaType == .image
-                }
-                let lease = try await mediaSessions.acquireImageLease(
+                let lease = try await mediaSessions.acquireImageGroupLease(
                     for: video,
-                    groupVideos: groupVideos,
+                    groupVideos: imageGroupVideos(for: video.libraryKind.rawValue),
                     store: store
                 )
                 try quickLookPreviewController.togglePreview(
@@ -439,7 +425,6 @@ final class CryptaLibrary {
             try store.encryptPlainVideo(video)
         }
         if didSucceed {
-            mediaSessions.invalidateImageGroup(video.libraryKind.rawValue)
             selectFirstVideoIfNeeded()
             showToast("已加密")
             playEncryptedVideoAddedSound()
@@ -540,6 +525,15 @@ final class CryptaLibrary {
     func selectOnly(_ video: CryptaVideo) {
         selectedVideoIDs = [video.id]
         primarySelectedVideoID = video.id
+    }
+
+    func selectVideoIDs(_ ids: Set<CryptaVideo.ID>, primaryID: CryptaVideo.ID?) {
+        selectedVideoIDs = ids
+        if let primaryID, ids.contains(primaryID) {
+            primarySelectedVideoID = primaryID
+        } else {
+            primarySelectedVideoID = visibleVideos.first { ids.contains($0.id) }?.id
+        }
     }
 
     func selectAllVisibleVideos() {
@@ -759,12 +753,9 @@ final class CryptaLibrary {
             isWorking = true
             defer { isWorking = false }
 
-            let groupVideos = videos.filter {
-                $0.libraryKind.rawValue == video.libraryKind.rawValue && $0.mediaType == .image
-            }
-            let acquiredLease = try await mediaSessions.acquireImageLease(
+            let acquiredLease = try await mediaSessions.acquireImageGroupLease(
                 for: video,
-                groupVideos: groupVideos,
+                groupVideos: imageGroupVideos(for: video.libraryKind.rawValue),
                 store: store
             )
             lease = acquiredLease
@@ -891,6 +882,12 @@ final class CryptaLibrary {
             for video in videos {
                 _ = await VideoThumbnailLoader.thumbnail(for: video)
             }
+        }
+    }
+
+    private func imageGroupVideos(for groupID: String) -> [CryptaVideo] {
+        videos.filter {
+            $0.libraryKind.rawValue == groupID && $0.mediaType == .image
         }
     }
 

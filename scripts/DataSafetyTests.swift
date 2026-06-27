@@ -13,6 +13,7 @@ struct DataSafetyTests {
         try await testCorruptedIndexFallsBackToBackup()
         try await testVideoLibraryImportsStayEncrypted()
         try await testEncryptedMediaDataSourceReadsRangesWithoutTemporaryPlaintext()
+        try await testEncryptedMediaDataSourceIgnoresStaleIndexByteCount()
         try await testInMemoryPlaybackSourceLoadsSyntheticAsset()
         try await testEncryptedVideoThumbnailDoesNotMaterializePlaybackFile()
         try await testEncryptedVideoImportCachesThumbnailWithoutPlaintextLeak()
@@ -22,13 +23,13 @@ struct DataSafetyTests {
         try await testSubtitleProcessCancellationReportsCancellation()
         try await testSubtitleTranslationRepairsMissingIDs()
         try await testEncryptedImageImportsStayEncryptedAndThumbnailsAreProtected()
-        try await testImagePlaybackDecryptsOnlyRequestedImage()
+        try await testImagePlaybackURLDecryptsSingleImage()
         try await testMkvThumbnailUsesMiddleFrame()
         try await testFailedImportKeepsSourceFileUntilIndexIsSaved()
         try await testFailedDeleteKeepsBlobWhenIndexCannotBeSaved()
         try await testMediaLeaseOwnsTemporaryPlaintext()
-        try await testImageGroupPreparationIsSharedAndLeaseSurvivesInvalidation()
-        try await testMissingImageGroupFileIsRebuilt()
+        try await testImageGroupLeaseMaterializesWholeVault()
+        try await testImageGroupLeaseIgnoresBrokenSiblings()
         try await testStartingAnotherSessionDoesNotDeleteLiveFiles()
         try await testSessionStartupRemovesOrphanedFiles()
         try await testExportDecryptRemovesVideoFromVaultAfterIndexSave()
@@ -313,6 +314,27 @@ struct DataSafetyTests {
         try expect(
             regularFiles(under: harness.locations.cacheRoot).isEmpty,
             "Memory playback source created cache/session files."
+        )
+    }
+
+    private static func testEncryptedMediaDataSourceIgnoresStaleIndexByteCount() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let plaintext = patternedData(count: 128 * 1024 + 17)
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        var video = try await harness.importEncryptedVideo(named: "StaleSize.mp4", data: plaintext, store: store)
+        video.byteCount += 99
+        try store.saveIndex(CryptaIndex(videos: [video]))
+
+        let dataSource = try store.inMemoryMediaDataSource(for: video)
+        try expect(
+            dataSource.byteCount == Int64(plaintext.count),
+            "Memory data source trusted a stale index byte count."
+        )
+        try expect(
+            try dataSource.data(offset: 0, length: plaintext.count) == plaintext,
+            "Memory data source could not read media with stale index byte count."
         )
     }
 
@@ -650,7 +672,7 @@ struct DataSafetyTests {
         )
     }
 
-    private static func testImagePlaybackDecryptsOnlyRequestedImage() async throws {
+    private static func testImagePlaybackURLDecryptsSingleImage() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
 
@@ -778,67 +800,96 @@ struct DataSafetyTests {
     }
 
     @MainActor
-    private static func testImageGroupPreparationIsSharedAndLeaseSurvivesInvalidation() async throws {
+    private static func testImageGroupLeaseMaterializesWholeVault() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
 
         let groupID = "image-group"
-        let plaintext = try samplePNGData()
-        let source = harness.root.appendingPathComponent("Shared.png", isDirectory: false)
-        try plaintext.write(to: source)
+        let firstData = try samplePNGData()
+        var secondData = firstData
+        secondData.append(Data("second-image".utf8))
+        let firstSource = harness.root.appendingPathComponent("FirstLease.png", isDirectory: false)
+        let secondSource = harness.root.appendingPathComponent("SecondLease.png", isDirectory: false)
+        try firstData.write(to: firstSource)
+        try secondData.write(to: secondSource)
         let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
-        let image = try await store.importImage(from: source, libraryKind: LibraryKind(rawValue: groupID))
+        let firstImage = try await store.importImage(from: firstSource, libraryKind: LibraryKind(rawValue: groupID))
+        let secondImage = try await store.importImage(from: secondSource, libraryKind: LibraryKind(rawValue: groupID))
         let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
 
-        async let firstLease = manager.acquireImageLease(for: image, groupVideos: [image], store: store)
-        async let secondLease = manager.acquireImageLease(for: image, groupVideos: [image], store: store)
-        let (first, second) = try await (firstLease, secondLease)
-        let generationDirectory = first.url.deletingLastPathComponent()
+        let lease = try await manager.acquireImageGroupLease(
+            for: firstImage,
+            groupVideos: [firstImage, secondImage],
+            store: store
+        )
+        let leaseDirectory = lease.url.deletingLastPathComponent()
 
-        try expect(first.url == second.url, "Concurrent image requests created competing group generations.")
-        manager.invalidateImageGroup(groupID)
+        try expect(try Data(contentsOf: lease.url) == firstData, "Image lease did not expose the requested image.")
         try expect(
-            FileManager.default.fileExists(atPath: first.url.path),
-            "Invalidating an image group deleted a file still held by a player lease."
+            regularFiles(under: leaseDirectory).count == 2,
+            "Opening one image did not decrypt the whole image vault for Pixea browsing."
         )
-        first.release()
+        let leasePath = lease.url.standardizedFileURL.path
+        let siblingFiles = try regularFiles(under: leaseDirectory).filter {
+            $0.standardizedFileURL.path != leasePath
+        }
+        try expect(siblingFiles.count == 1, "Image group lease did not expose exactly one sibling image.")
+        try expect(try Data(contentsOf: siblingFiles[0]) == secondData, "Image group lease wrote the wrong sibling plaintext.")
+        guard let secondEncryptedFileName = secondImage.encryptedFileName else {
+            throw TestFailure("Second image did not retain its encrypted blob.")
+        }
+        let secondBlob = harness.locations.moviesVault.appendingPathComponent(secondEncryptedFileName)
+        try expect(FileManager.default.fileExists(atPath: secondBlob.path), "Second image blob was removed.")
+        try expect(try Data(contentsOf: secondBlob) != secondData, "Second image was left as plaintext.")
+        lease.release()
         try expect(
-            FileManager.default.fileExists(atPath: second.url.path),
-            "Releasing one of multiple image leases deleted the shared file."
-        )
-        second.release()
-        try expect(
-            !FileManager.default.fileExists(atPath: generationDirectory.path),
-            "The invalidated image generation remained after its final lease was released."
+            !FileManager.default.fileExists(atPath: leaseDirectory.path),
+            "Released image lease left plaintext behind."
         )
         manager.shutdown()
     }
 
     @MainActor
-    private static func testMissingImageGroupFileIsRebuilt() async throws {
+    private static func testImageGroupLeaseIgnoresBrokenSiblings() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
 
-        let groupID = "rebuild-group"
+        let groupID = "broken-sibling-group"
         let plaintext = try samplePNGData()
-        let source = harness.root.appendingPathComponent("Rebuild.png", isDirectory: false)
+        let source = harness.root.appendingPathComponent("Healthy.png", isDirectory: false)
         try plaintext.write(to: source)
         let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
-        let image = try await store.importImage(from: source, libraryKind: LibraryKind(rawValue: groupID))
+        let healthyImage = try await store.importImage(from: source, libraryKind: LibraryKind(rawValue: groupID))
+        let brokenImage = CryptaVideo(
+            id: UUID(),
+            displayName: "Missing sibling",
+            originalExtension: "png",
+            libraryKind: LibraryKind(rawValue: groupID),
+            mediaType: .image,
+            storageState: .encrypted,
+            plainFileName: nil,
+            encryptedFileName: "missing-sibling-blob",
+            importedAt: Date(),
+            byteCount: 1,
+            durationSeconds: nil
+        )
+        try store.saveIndex(CryptaIndex(groups: [], videos: [healthyImage, brokenImage]))
         let manager = DecryptedMediaSessionManager(cacheRoot: harness.locations.cacheRoot)
 
-        let firstLease = try await manager.acquireImageLease(for: image, groupVideos: [image], store: store)
-        let firstURL = firstLease.url
-        firstLease.release()
-        try FileManager.default.removeItem(at: firstURL)
-
-        let rebuiltLease = try await manager.acquireImageLease(for: image, groupVideos: [image], store: store)
-        try expect(
-            try Data(contentsOf: rebuiltLease.url) == plaintext,
-            "A missing image cache file was not rebuilt before opening."
+        let lease = try await manager.acquireImageGroupLease(
+            for: healthyImage,
+            groupVideos: [healthyImage, brokenImage],
+            store: store
         )
-        rebuiltLease.release()
-        manager.invalidateImageGroup(groupID)
+        try expect(
+            try Data(contentsOf: lease.url) == plaintext,
+            "A broken sibling image prevented the selected image from opening."
+        )
+        try expect(
+            regularFiles(under: lease.url.deletingLastPathComponent()).count == 1,
+            "Broken sibling image produced an unexpected plaintext file."
+        )
+        lease.release()
         manager.shutdown()
     }
 
