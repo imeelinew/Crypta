@@ -325,7 +325,7 @@ private struct AppKitVideoList: NSViewRepresentable {
         )
     }
 
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, VideoTableViewActionDelegate {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, VideoTableViewActionDelegate, HoverTableViewDelegate {
         var videos: [CryptaVideo]
         var selectedVideoIDs: Set<CryptaVideo.ID>
         var subtitleJob: SubtitleJobProgress?
@@ -338,8 +338,10 @@ private struct AppKitVideoList: NSViewRepresentable {
         var onGenerateSubtitles: (CryptaVideo) -> Void
         var onRename: (CryptaVideo) -> Void
         var onDelete: (CryptaVideo) -> Void
+        private weak var scrollView: NSScrollView?
         private weak var tableView: VideoTableView?
         private var isSyncingSelection = false
+        private var hoveredRow: Int = -1
 
         init(
             videos: [CryptaVideo],
@@ -378,8 +380,10 @@ private struct AppKitVideoList: NSViewRepresentable {
             scrollView.autohidesScrollers = true
 
             let tableView = VideoTableView()
+            self.scrollView = scrollView
             self.tableView = tableView
             tableView.actionDelegate = self
+            tableView.hoverDelegate = self
             tableView.delegate = self
             tableView.dataSource = self
             tableView.headerView = nil
@@ -397,6 +401,7 @@ private struct AppKitVideoList: NSViewRepresentable {
             tableView.addTableColumn(column)
 
             scrollView.documentView = tableView
+            installScrollObserver()
             syncSelection(in: tableView)
             return scrollView
         }
@@ -431,6 +436,8 @@ private struct AppKitVideoList: NSViewRepresentable {
             guard let tableView else { return }
             if shouldReload {
                 tableView.reloadData()
+                applyHoveredRow(-1)
+                tableView.updateHoverFromCurrentMouse()
             }
             syncSelection(in: tableView)
         }
@@ -449,6 +456,12 @@ private struct AppKitVideoList: NSViewRepresentable {
             cell.configure(video: video, progress: subtitleProgress(for: video))
             loadThumbnail(for: video, into: cell)
             return cell
+        }
+
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            let view = HoverableRowView()
+            view.isHovered = isRowHovered(row)
+            return view
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -499,6 +512,16 @@ private struct AppKitVideoList: NSViewRepresentable {
             return menu
         }
 
+        func hoverTableView(_ tableView: VideoTableView, didHoverRow row: Int) {
+            let resolved: Int
+            if videos.indices.contains(row) {
+                resolved = row
+            } else {
+                resolved = -1
+            }
+            applyHoveredRow(resolved)
+        }
+
         @objc private func generateSubtitlesFromMenu(_ sender: NSMenuItem) {
             guard let video = sender.representedObject as? CryptaVideo else { return }
             onGenerateSubtitles(video)
@@ -520,6 +543,44 @@ private struct AppKitVideoList: NSViewRepresentable {
             isSyncingSelection = true
             tableView.selectRowIndexes(selectedRows, byExtendingSelection: false)
             isSyncingSelection = false
+        }
+
+        private func installScrollObserver() {
+            guard let scrollView else { return }
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(contentBoundsDidChange),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+        }
+
+        @objc private func contentBoundsDidChange() {
+            tableView?.updateHoverFromCurrentMouse()
+        }
+
+        private func applyHoveredRow(_ row: Int) {
+            guard row != hoveredRow else { return }
+            let previous = hoveredRow
+            hoveredRow = row
+
+            guard let tableView else { return }
+            let rowCount = tableView.numberOfRows
+            if previous >= 0,
+               previous < rowCount,
+               let view = tableView.rowView(atRow: previous, makeIfNecessary: false) as? HoverableRowView {
+                view.isHovered = false
+            }
+            if row >= 0,
+               row < rowCount,
+               let view = tableView.rowView(atRow: row, makeIfNecessary: false) as? HoverableRowView {
+                view.isHovered = true
+            }
+        }
+
+        func isRowHovered(_ row: Int) -> Bool {
+            row == hoveredRow
         }
 
         private func loadThumbnail(for video: CryptaVideo, into cell: VideoTableCellView) {
@@ -548,6 +609,10 @@ private struct AppKitVideoList: NSViewRepresentable {
     }
 }
 
+private protocol HoverTableViewDelegate: AnyObject {
+    func hoverTableView(_ tableView: VideoTableView, didHoverRow row: Int)
+}
+
 private protocol VideoTableViewActionDelegate: AnyObject {
     func videoTableViewDidPressSpace(_ tableView: VideoTableView)
     func videoTableViewDidPressSelectAll(_ tableView: VideoTableView)
@@ -556,6 +621,42 @@ private protocol VideoTableViewActionDelegate: AnyObject {
 
 private final class VideoTableView: NSTableView {
     weak var actionDelegate: VideoTableViewActionDelegate?
+    weak var hoverDelegate: HoverTableViewDelegate?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let point = convert(event.locationInWindow, from: nil)
+        hoverDelegate?.hoverTableView(self, didHoverRow: row(at: point))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        hoverDelegate?.hoverTableView(self, didHoverRow: -1)
+    }
+
+    func updateHoverFromCurrentMouse() {
+        guard let window else { return }
+        let mouse = window.mouseLocationOutsideOfEventStream
+        let point = convert(mouse, from: nil)
+        let inside = bounds.contains(point) && visibleRect.contains(point)
+        hoverDelegate?.hoverTableView(self, didHoverRow: inside ? row(at: point) : -1)
+    }
 
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags
@@ -577,10 +678,88 @@ private final class VideoTableView: NSTableView {
     }
 }
 
+private final class HoverableRowView: NSTableRowView {
+    var isHovered = false {
+        didSet {
+            guard isHovered != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard isHovered, !isSelected else { return }
+        drawRoundedBackground(color: NSColor.labelColor.withAlphaComponent(0.08))
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard selectionHighlightStyle != .none else { return }
+        drawRoundedBackground(color: .selectedContentBackgroundColor)
+    }
+
+    private func drawRoundedBackground(color: NSColor) {
+        let inset = bounds.insetBy(dx: 10, dy: 2)
+        let path = NSBezierPath(roundedRect: inset, xRadius: 8, yRadius: 8)
+        color.setFill()
+        path.fill()
+    }
+}
+
+private final class AspectFillThumbnailImageView: NSImageView {
+    var shouldAspectFill = false {
+        didSet {
+            guard shouldAspectFill != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    override var image: NSImage? {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard shouldAspectFill, let image else {
+            super.draw(dirtyRect)
+            return
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).addClip()
+        NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+        bounds.fill()
+
+        let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0, bounds.width > 0, bounds.height > 0 else {
+            NSGraphicsContext.restoreGraphicsState()
+            return
+        }
+
+        let scale = max(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let drawSize = NSSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let drawRect = NSRect(
+            x: bounds.midX - drawSize.width / 2,
+            y: bounds.midY - drawSize.height / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
+        image.draw(
+            in: drawRect,
+            from: NSRect(origin: .zero, size: imageSize),
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: nil
+        )
+        NSGraphicsContext.restoreGraphicsState()
+    }
+}
+
 private final class VideoTableCellView: NSTableCellView {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("VideoTableCell")
 
-    private let thumbnailImageView = NSImageView()
+    private let thumbnailImageView = AspectFillThumbnailImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let detailField = NSTextField(labelWithString: "")
     private let statusImageView = NSImageView()
@@ -624,6 +803,7 @@ private final class VideoTableCellView: NSTableCellView {
 
     func setThumbnail(_ thumbnail: NSImage?, for video: CryptaVideo) {
         if let thumbnail {
+            thumbnailImageView.shouldAspectFill = true
             thumbnailImageView.image = thumbnail
             thumbnailImageView.contentTintColor = nil
         } else {
@@ -633,6 +813,7 @@ private final class VideoTableCellView: NSTableCellView {
 
     func setPlaceholder(for video: CryptaVideo) {
         let symbolName = video.isImage ? "photo.fill" : "video.fill"
+        thumbnailImageView.shouldAspectFill = false
         thumbnailImageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
         thumbnailImageView.contentTintColor = .secondaryLabelColor
     }
@@ -643,6 +824,7 @@ private final class VideoTableCellView: NSTableCellView {
         thumbnailImageView.wantsLayer = true
         thumbnailImageView.layer?.cornerRadius = 6
         thumbnailImageView.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.12).cgColor
+        thumbnailImageView.layer?.masksToBounds = true
 
         titleField.font = .systemFont(ofSize: 13, weight: .medium)
         titleField.lineBreakMode = .byTruncatingTail
