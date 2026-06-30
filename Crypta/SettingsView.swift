@@ -3,12 +3,40 @@ import SwiftUI
 struct CryptaSettingsView: View {
     var body: some View {
         TabView {
+            AppearanceSettingsView()
+                .tabItem {
+                    Label("外观", systemImage: "paintpalette")
+                }
+
             SubtitleSettingsView()
                 .tabItem {
                     Label("字幕", systemImage: "captions.bubble")
                 }
         }
         .frame(width: 488, height: 384)
+    }
+}
+
+private struct AppearanceSettingsView: View {
+    @AppStorage(SidebarIconTheme.storageKey) private var sidebarIconThemeRaw = SidebarIconTheme.colorful.rawValue
+
+    private var sidebarIconThemeBinding: Binding<SidebarIconTheme> {
+        Binding(
+            get: { SidebarIconTheme(rawValue: sidebarIconThemeRaw) ?? .colorful },
+            set: { sidebarIconThemeRaw = $0.rawValue }
+        )
+    }
+
+    var body: some View {
+        Form {
+            Picker("侧边栏图标", selection: sidebarIconThemeBinding) {
+                ForEach(SidebarIconTheme.allCases) { theme in
+                    Text(theme.displayName).tag(theme)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top, 18)
     }
 }
 
