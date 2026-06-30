@@ -4,13 +4,8 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Bindable var library: CryptaLibrary
-    @AppStorage(SidebarIconTheme.storageKey) private var sidebarIconThemeRaw = SidebarIconTheme.colorful.rawValue
     @State private var importerPresented = false
     @State private var dropIsTargeted = false
-
-    private var sidebarIconTheme: SidebarIconTheme {
-        SidebarIconTheme(rawValue: sidebarIconThemeRaw) ?? .colorful
-    }
 
     var body: some View {
         NavigationSplitView {
@@ -18,11 +13,6 @@ struct ContentView: View {
         } detail: {
             VideoListPage(library: library)
         }
-        .environment(\.sidebarIconTheme, sidebarIconTheme)
-        .environment(\.sidebarIconTileSize, 22)
-        .environment(\.sidebarIconSymbolSize, 11)
-        .environment(\.sidebarIconCornerRadius, 6)
-        .environment(\.professionalSidebarIconSize, 15)
         .toolbar {
             ToolbarSpacer(.flexible)
 

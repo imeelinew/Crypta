@@ -5,54 +5,26 @@ struct SidebarView: View {
     @Bindable var library: CryptaLibrary
 
     var body: some View {
-        List(selection: groupSelection) {
-            ForEach(library.groups) { group in
-                NavigationLink(value: group.id) {
-                    SidebarGroupLabel(
-                        group: group,
-                        isUnlocked: library.isGroupUnlocked(group)
-                    )
-                }
-                .contextMenu {
-                    if library.canManuallyLock(group) {
-                        Button("上锁", systemImage: "lock.fill") {
-                            library.manuallyLock(group)
-                        }
-                        Divider()
-                    }
-                    Button("重命名") {
-                        library.requestEditGroup(group)
-                    }
-                    Button("删除") {
-                        Task { await library.deleteGroup(group) }
-                    }
-                    .disabled(!library.canDeleteGroup(group))
-                }
-            }
-            .onMove { source, destination in
-                library.moveGroups(from: source, to: destination)
-            }
-        }
-        .listStyle(.sidebar)
-        .navigationTitle("Crypta")
-        .navigationSplitViewColumnWidth(min: 150, ideal: 180)
-        .scrollContentBackground(.hidden)
-        .background {
-            SidebarSourceListStyleInstaller(enabled: true)
-            Color.clear
-            TransparentListBackgroundInstaller()
-        }
-    }
-
-    private var groupSelection: Binding<String?> {
-        Binding(
-            get: { library.selectedGroupID },
-            set: { nextID in
-                guard let nextID,
-                      let group = library.groups.first(where: { $0.id == nextID }) else { return }
+        AppKitSidebarList(
+            groups: library.groups,
+            selectedGroupID: library.selectedGroupID,
+            isGroupUnlocked: { library.isGroupUnlocked($0) },
+            canManuallyLock: { library.canManuallyLock($0) },
+            canDeleteGroup: { library.canDeleteGroup($0) },
+            onSelectGroup: { group in
                 Task { await library.selectGroup(group) }
+            },
+            onMove: { source, destination in
+                library.moveGroups(from: source, to: destination)
+            },
+            onLock: { library.manuallyLock($0) },
+            onRename: { library.requestEditGroup($0) },
+            onDelete: { group in
+                Task { await library.deleteGroup(group) }
             }
         )
+        .navigationTitle("Crypta")
+        .navigationSplitViewColumnWidth(min: 150, ideal: 180)
     }
 }
 
