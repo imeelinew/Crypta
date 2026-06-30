@@ -13,7 +13,6 @@ struct SidebarView: View {
                         isUnlocked: library.isGroupUnlocked(group)
                     )
                 }
-                .listRowBackground(Color.clear)
                 .contextMenu {
                     if library.canManuallyLock(group) {
                         Button("上锁", systemImage: "lock.fill") {
@@ -38,8 +37,11 @@ struct SidebarView: View {
         .navigationTitle("Crypta")
         .navigationSplitViewColumnWidth(min: 150, ideal: 180)
         .scrollContentBackground(.hidden)
-        .background(Color.clear)
-        .background(TransparentListBackgroundInstaller())
+        .background {
+            SidebarSourceListStyleInstaller(enabled: true)
+            Color.clear
+            TransparentListBackgroundInstaller()
+        }
     }
 
     private var groupSelection: Binding<String?> {
@@ -883,52 +885,6 @@ private final class VideoTableCellView: NSTableCellView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
-    }
-}
-
-private struct TransparentListBackgroundInstaller: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        NSView(frame: .zero)
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { [weak view] in
-            view?.nearestTableView()?.applyTransparentListBackground()
-        }
-    }
-}
-
-private extension NSView {
-    func nearestTableView() -> NSTableView? {
-        var candidate: NSView? = self
-        while let view = candidate {
-            if let tableView = view.firstDescendant(ofType: NSTableView.self) {
-                return tableView
-            }
-            candidate = view.superview
-        }
-        return nil
-    }
-
-    func firstDescendant<T: NSView>(ofType type: T.Type) -> T? {
-        if let typed = self as? T {
-            return typed
-        }
-
-        for subview in subviews {
-            if let typed = subview.firstDescendant(ofType: type) {
-                return typed
-            }
-        }
-
-        return nil
-    }
-}
-
-private extension NSTableView {
-    func applyTransparentListBackground() {
-        backgroundColor = .clear
-        enclosingScrollView?.drawsBackground = false
     }
 }
 
