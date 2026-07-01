@@ -792,7 +792,7 @@ private final class VideoTableCellView: NSTableCellView {
         }
 
         NSLayoutConstraint.activate([
-            thumbnailImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            thumbnailImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
             thumbnailImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
             thumbnailImageView.widthAnchor.constraint(equalToConstant: 64),
             thumbnailImageView.heightAnchor.constraint(equalToConstant: 38),
