@@ -625,6 +625,13 @@ private final class HoverableRowView: NSTableRowView {
         }
     }
 
+    override var isEmphasized: Bool {
+        didSet {
+            guard isEmphasized != oldValue, isSelected else { return }
+            needsDisplay = true
+        }
+    }
+
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
         guard isHovered, !isSelected else { return }
@@ -633,7 +640,10 @@ private final class HoverableRowView: NSTableRowView {
 
     override func drawSelection(in dirtyRect: NSRect) {
         guard selectionHighlightStyle != .none else { return }
-        drawRoundedBackground(color: .selectedContentBackgroundColor)
+        let color: NSColor = isEmphasized
+            ? .selectedContentBackgroundColor
+            : .unemphasizedSelectedContentBackgroundColor
+        drawRoundedBackground(color: color)
     }
 
     private func drawRoundedBackground(color: NSColor) {
@@ -705,7 +715,12 @@ private final class VideoTableCellView: NSTableCellView {
     private let progressIndicator = NSProgressIndicator()
     private let progressField = NSTextField(labelWithString: "")
     private let separator = NSBox()
+    private var isShowingPlaceholder = false
     var videoID: CryptaVideo.ID?
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { applyForeground() }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -738,10 +753,12 @@ private final class VideoTableCellView: NSTableCellView {
                 accessibilityDescription: "已有字幕"
             )
         }
+        applyForeground()
     }
 
     func setThumbnail(_ thumbnail: NSImage?, for video: CryptaVideo) {
         if let thumbnail {
+            isShowingPlaceholder = false
             thumbnailImageView.shouldAspectFill = true
             thumbnailImageView.image = thumbnail
             thumbnailImageView.contentTintColor = nil
@@ -752,9 +769,24 @@ private final class VideoTableCellView: NSTableCellView {
 
     func setPlaceholder(for video: CryptaVideo) {
         let symbolName = video.isImage ? "photo.fill" : "video.fill"
+        isShowingPlaceholder = true
         thumbnailImageView.shouldAspectFill = false
         thumbnailImageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
-        thumbnailImageView.contentTintColor = .secondaryLabelColor
+        applyForeground()
+    }
+
+    private func applyForeground() {
+        let emphasized = backgroundStyle == .emphasized
+        let primary: NSColor = emphasized ? .alternateSelectedControlTextColor : .labelColor
+        let secondary: NSColor = emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor
+
+        titleField.textColor = primary
+        detailField.textColor = secondary
+        statusImageView.contentTintColor = secondary
+        progressField.textColor = secondary
+        if isShowingPlaceholder {
+            thumbnailImageView.contentTintColor = secondary
+        }
     }
 
     private func setup() {
@@ -768,11 +800,9 @@ private final class VideoTableCellView: NSTableCellView {
         titleField.font = .systemFont(ofSize: 13, weight: .medium)
         titleField.lineBreakMode = .byTruncatingTail
         detailField.font = .systemFont(ofSize: 11)
-        detailField.textColor = .secondaryLabelColor
         detailField.lineBreakMode = .byTruncatingTail
 
         statusImageView.symbolConfiguration = .init(pointSize: 13, weight: .medium)
-        statusImageView.contentTintColor = .secondaryLabelColor
         statusImageView.imageScaling = .scaleProportionallyUpOrDown
 
         progressIndicator.isIndeterminate = false
@@ -780,7 +810,6 @@ private final class VideoTableCellView: NSTableCellView {
         progressIndicator.maxValue = 100
         progressIndicator.controlSize = .small
         progressField.font = .systemFont(ofSize: 10)
-        progressField.textColor = .secondaryLabelColor
         progressField.alignment = .right
         progressField.lineBreakMode = .byTruncatingTail
 
@@ -822,6 +851,8 @@ private final class VideoTableCellView: NSTableCellView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+
+        applyForeground()
     }
 }
 
