@@ -156,17 +156,7 @@ struct ContentView: View {
     @ViewBuilder
     private var toastView: some View {
         if let toast = library.toast {
-            Label(toast.message, systemImage: toast.systemImage)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(toast.foregroundStyle)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 11)
-                .glassEffect(.regular, in: Capsule())
-                .shadow(color: .black.opacity(0.16), radius: 18, y: 8)
-                .padding(.top, 12)
-                .transition(.blurReplace)
-                .allowsHitTesting(false)
-                .accessibilityAddTraits(.isStaticText)
+            CryptaToastView(toast: toast)
         }
     }
 
@@ -207,15 +197,6 @@ struct ContentView: View {
             get: { library.errorMessage != nil },
             set: { if !$0 { library.errorMessage = nil } }
         )
-    }
-}
-
-private extension CryptaToast {
-    var foregroundStyle: Color {
-        switch kind {
-        case .success: return .primary
-        case .error: return Color(red: 0.82, green: 0.18, blue: 0.18)
-        }
     }
 }
 

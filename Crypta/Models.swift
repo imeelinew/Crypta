@@ -26,6 +26,14 @@ nonisolated enum EncryptionLevel: String, Codable, Sendable, CaseIterable, Ident
         }
     }
 
+    var creationDescription: String {
+        switch self {
+        case .standard: return "打开即可访问，不需要解锁"
+        case .extended: return "需解锁；切到其他保险箱仍保持解锁，也可手动上锁"
+        case .maximum: return "需解锁；切走或 App 失焦会自动上锁"
+        }
+    }
+
     var requiresAuthentication: Bool {
         self != .standard
     }
@@ -54,6 +62,10 @@ nonisolated enum MediaType: String, Codable, Sendable, CaseIterable, Identifiabl
         case .video: return "视频"
         case .image: return "图片"
         }
+    }
+
+    var creationDescription: String {
+        "创建后不可更改，视频与图片需分开存放"
     }
 
     var itemNoun: String {
@@ -358,6 +370,7 @@ nonisolated enum CryptaError: LocalizedError {
     case invalidExportDestination
     case externalPlayerUnavailable
     case externalPlayerOpenFailed
+    case temporarySessionFailed
     case subtitleConfigurationMissing
     case subtitleToolUnavailable(String)
     case subtitleGenerationFailed(String)
@@ -394,6 +407,8 @@ nonisolated enum CryptaError: LocalizedError {
             return "找不到 IINA"
         case .externalPlayerOpenFailed:
             return "无法使用 IINA 播放"
+        case .temporarySessionFailed:
+            return "无法创建安全的临时媒体会话"
         case .subtitleConfigurationMissing:
             return "找不到字幕模型配置"
         case .subtitleToolUnavailable(let tool):

@@ -32,7 +32,7 @@ final class DecryptedMediaLease {
 
 @MainActor
 final class DecryptedMediaSessionManager {
-    static let shared = DecryptedMediaSessionManager(cacheRoot: CryptaPaths.cacheRoot)
+    static let shared = DecryptedMediaSessionManager(cacheRoot: CryptaStorageLocations.live.cacheRoot)
 
     private struct Resource {
         let directoryURL: URL
@@ -49,10 +49,16 @@ final class DecryptedMediaSessionManager {
         let fileURLsByVideoID: [CryptaVideo.ID: URL]
     }
 
+    private struct SessionOwner: Codable {
+        let processIdentifier: Int32
+        let processStartTime: UInt64
+    }
+
     private let fileManager: FileManager
     private let sessionsRoot: URL
     private let sessionID: UUID
     private let sessionDirectory: URL
+    private let processStartTimeProvider: (Int32) -> UInt64?
     private var didStart = false
     private var resources: [UUID: Resource] = [:]
     private var leaseResourceIDs: [UUID: UUID] = [:]
@@ -60,8 +66,13 @@ final class DecryptedMediaSessionManager {
     private var imageGroupTasks: [String: Task<ImageGroupSnapshot, Error>] = [:]
     private var imageGroupTaskIDs: [String: UUID] = [:]
 
-    init(cacheRoot: URL, fileManager: FileManager = .default) {
+    init(
+        cacheRoot: URL,
+        fileManager: FileManager = .default,
+        processStartTimeProvider: @escaping (Int32) -> UInt64? = DecryptedMediaSessionManager.processStartTime
+    ) {
         self.fileManager = fileManager
+        self.processStartTimeProvider = processStartTimeProvider
         sessionsRoot = cacheRoot.appendingPathComponent("Sessions", isDirectory: true)
         sessionID = UUID()
         sessionDirectory = sessionsRoot.appendingPathComponent(sessionID.uuidString, isDirectory: true)
@@ -69,11 +80,23 @@ final class DecryptedMediaSessionManager {
 
     func start() throws {
         guard !didStart else { return }
+        let processIdentifier = ProcessInfo.processInfo.processIdentifier
+        guard let processStartTime = processStartTimeProvider(processIdentifier) else {
+            throw CryptaError.temporarySessionFailed
+        }
         try fileManager.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
         try cleanupOrphanedSessions()
         try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
-        try Data("\(ProcessInfo.processInfo.processIdentifier)".utf8).write(
+        try Data("\(processIdentifier)".utf8).write(
             to: sessionDirectory.appendingPathComponent("owner.pid", isDirectory: false),
+            options: [.atomic]
+        )
+        let owner = SessionOwner(
+            processIdentifier: processIdentifier,
+            processStartTime: processStartTime
+        )
+        try JSONEncoder().encode(owner).write(
+            to: sessionDirectory.appendingPathComponent("owner.json", isDirectory: false),
             options: [.atomic]
         )
         didStart = true
@@ -261,6 +284,19 @@ final class DecryptedMediaSessionManager {
             options: [.skipsHiddenFiles]
         )
         for directory in sessionDirectories where directory != sessionDirectory {
+            let ownerMetadataURL = directory.appendingPathComponent("owner.json", isDirectory: false)
+            if let data = try? Data(contentsOf: ownerMetadataURL),
+               let owner = try? JSONDecoder().decode(SessionOwner.self, from: data) {
+                if let currentStartTime = processStartTimeProvider(owner.processIdentifier) {
+                    if currentStartTime != owner.processStartTime {
+                        try? fileManager.removeItem(at: directory)
+                    }
+                } else if !Self.isProcessAlive(owner.processIdentifier) {
+                    try? fileManager.removeItem(at: directory)
+                }
+                continue
+            }
+
             let ownerURL = directory.appendingPathComponent("owner.pid", isDirectory: false)
             guard let data = try? Data(contentsOf: ownerURL),
                   let value = String(data: data, encoding: .utf8),
@@ -280,5 +316,14 @@ final class DecryptedMediaSessionManager {
             return true
         }
         return errno == EPERM
+    }
+
+    nonisolated private static func processStartTime(_ pid: Int32) -> UInt64? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        let actualSize = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, expectedSize)
+        guard actualSize == expectedSize else { return nil }
+        return info.pbi_start_tvsec
     }
 }

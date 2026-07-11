@@ -17,10 +17,10 @@ nonisolated struct SubtitleGenerator: Sendable {
         guard FileManager.default.fileExists(atPath: whisperModelPath) else {
             throw CryptaError.subtitleGenerationFailed(whisperModelPath)
         }
-        guard let ffmpegURL = SubtitleProcessRunner.executableURL(named: "ffmpeg") else {
+        guard let ffmpegURL = ExternalToolRunner.executableURL(named: "ffmpeg") else {
             throw CryptaError.subtitleToolUnavailable("ffmpeg")
         }
-        guard let whisperURL = SubtitleProcessRunner.executableURL(named: "whisper-cli") else {
+        guard let whisperURL = ExternalToolRunner.executableURL(named: "whisper-cli") else {
             throw CryptaError.subtitleToolUnavailable("whisper-cli")
         }
 
@@ -33,17 +33,15 @@ nonisolated struct SubtitleGenerator: Sendable {
         let audioURL = workDirectory.appendingPathComponent("\(baseName).wav", isDirectory: false)
         let srtBaseURL = workDirectory.appendingPathComponent(baseName, isDirectory: false)
         let srtURL = srtBaseURL.appendingPathExtension("srt")
-        let whisperLogURL = workDirectory.appendingPathComponent("\(baseName).whisper.log", isDirectory: false)
 
         defer {
             try? FileManager.default.removeItem(at: audioURL)
             try? FileManager.default.removeItem(at: srtURL)
-            try? FileManager.default.removeItem(at: whisperLogURL)
         }
 
         await progress(5, "抽取音频")
         try Task.checkCancellation()
-        try await SubtitleProcessRunner.run(
+        try await ExternalToolRunner.run(
             executable: ffmpegURL,
             arguments: ["-y", "-i", videoURL.path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", audioURL.path, "-loglevel", "error"]
         )
@@ -51,7 +49,7 @@ nonisolated struct SubtitleGenerator: Sendable {
         await progress(12, "识别字幕")
         try Task.checkCancellation()
         let logBox = WhisperLogBox()
-        try await SubtitleProcessRunner.run(
+        try await ExternalToolRunner.run(
             executable: whisperURL,
             arguments: [
                 "-m", whisperModelPath,
@@ -63,8 +61,7 @@ nonisolated struct SubtitleGenerator: Sendable {
             ],
             outputHandler: { chunk in
                 let snapshot = logBox.append(chunk)
-                try? snapshot.write(to: whisperLogURL, atomically: true, encoding: .utf8)
-                let processed = Self.parseWhisperProcessedSeconds(from: snapshot)
+                let processed = snapshot.processedSeconds
                 if processed > 0 {
                     Task { @MainActor in
                         progress(min(88, 12 + processed / 4), "识别字幕")
@@ -72,8 +69,6 @@ nonisolated struct SubtitleGenerator: Sendable {
                 }
             }
         )
-
-        let whisperLog = logBox.snapshot()
 
         guard FileManager.default.fileExists(atPath: srtURL.path) else {
             throw CryptaError.subtitleGenerationFailed("Whisper 没有生成有效字幕")
@@ -84,7 +79,7 @@ nonisolated struct SubtitleGenerator: Sendable {
             throw CryptaError.subtitleGenerationFailed("Whisper 没有生成有效字幕")
         }
 
-        let detectedLanguage = Self.parseWhisperLanguage(from: whisperLog)
+        let detectedLanguage = logBox.snapshot().language
         var cues = SubtitleSRT.parse(rawSRT)
 
         if detectedLanguage == "en", configuration.canUseLLM, configuration.segmentationEnabled {
@@ -112,50 +107,50 @@ nonisolated struct SubtitleGenerator: Sendable {
         await progress(100, "字幕已写入视频")
     }
 
-    private static func parseWhisperLanguage(from log: String) -> String {
-        let pattern = #"auto-detected language:\s*([A-Za-z_-]+)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return "en"
-        }
-        let range = NSRange(log.startIndex..., in: log)
-        guard let match = regex.firstMatch(in: log, range: range),
-              let languageRange = Range(match.range(at: 1), in: log) else {
-            return "en"
-        }
-        return String(log[languageRange]).split(separator: "-").first.map { String($0).lowercased() } ?? "en"
-    }
-
-    private static func parseWhisperProcessedSeconds(from log: String) -> Int {
-        let pattern = #"\[(\d+):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})\.(\d{3})\]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return 0 }
-        let nsLog = log as NSString
-        let matches = regex.matches(in: log, range: NSRange(location: 0, length: nsLog.length))
-        guard let last = matches.last else { return 0 }
-        func component(_ index: Int) -> Int {
-            Int(nsLog.substring(with: last.range(at: index))) ?? 0
-        }
-        let hours = component(5)
-        let minutes = component(6)
-        let seconds = component(7)
-        let millis = component(8)
-        return hours * 3600 + minutes * 60 + seconds + millis / 1000
-    }
 }
 
 nonisolated private final class WhisperLogBox: @unchecked Sendable {
-    private var value = ""
-    private let lock = NSLock()
-
-    func append(_ chunk: String) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        value += chunk
-        return value
+    struct Snapshot {
+        let language: String
+        let processedSeconds: Int
     }
 
-    func snapshot() -> String {
+    private var tail = ""
+    private var language = "en"
+    private var processedSeconds = 0
+    private let lock = NSLock()
+
+    func append(_ chunk: String) -> Snapshot {
         lock.lock()
         defer { lock.unlock() }
-        return value
+        tail = String((tail + chunk).suffix(4096))
+        updateLanguage()
+        updateProgress()
+        return Snapshot(language: language, processedSeconds: processedSeconds)
+    }
+
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(language: language, processedSeconds: processedSeconds)
+    }
+
+    private func updateLanguage() {
+        let pattern = #"auto-detected language:\s*([A-Za-z_-]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)),
+              let range = Range(match.range(at: 1), in: tail) else { return }
+        language = String(tail[range]).split(separator: "-").first.map { String($0).lowercased() } ?? "en"
+    }
+
+    private func updateProgress() {
+        let pattern = #"\[(\d+):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})\.(\d{3})\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        let value = tail as NSString
+        guard let match = regex.matches(in: tail, range: NSRange(location: 0, length: value.length)).last else { return }
+        func component(_ index: Int) -> Int {
+            Int(value.substring(with: match.range(at: index))) ?? 0
+        }
+        processedSeconds = max(processedSeconds, component(5) * 3600 + component(6) * 60 + component(7))
     }
 }

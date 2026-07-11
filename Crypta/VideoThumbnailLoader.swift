@@ -108,7 +108,7 @@ enum VideoThumbnailLoader {
     }
 
     private static func ffmpegImage(from url: URL, seconds: Double) throws -> NSImage {
-        guard let ffmpegURL = ffmpegExecutableURL() else {
+        guard let ffmpegURL = ExternalToolRunner.executableURL(named: "ffmpeg") else {
             throw CryptaError.thumbnailFailed
         }
 
@@ -120,9 +120,7 @@ enum VideoThumbnailLoader {
         }
 
         let outputURL = outputDirectory.appendingPathComponent("thumbnail.png", isDirectory: false)
-        let process = Process()
-        process.executableURL = ffmpegURL
-        process.arguments = [
+        try ExternalToolRunner.runAndWait(executable: ffmpegURL, arguments: [
             "-v", "error",
             "-y",
             "-ss", String(format: "%.3f", seconds),
@@ -132,13 +130,9 @@ enum VideoThumbnailLoader {
             "-sn",
             "-vf", "scale=min(\(Int(maximumThumbnailDimension))\\,iw):-2",
             outputURL.path
-        ]
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
+        ])
 
-        guard process.terminationStatus == 0,
-              FileManager.default.fileExists(atPath: outputURL.path),
+        guard FileManager.default.fileExists(atPath: outputURL.path),
               let image = NSImage(contentsOf: outputURL) else {
             throw CryptaError.thumbnailFailed
         }
@@ -146,57 +140,22 @@ enum VideoThumbnailLoader {
     }
 
     nonisolated private static func ffprobeDuration(from url: URL) throws -> Double {
-        guard let ffprobeURL = ffprobeExecutableURL() else {
+        guard let ffprobeURL = ExternalToolRunner.executableURL(named: "ffprobe") else {
             throw CryptaError.thumbnailFailed
         }
 
-        let output = Pipe()
-        let process = Process()
-        process.executableURL = ffprobeURL
-        process.arguments = [
+        let output = try ExternalToolRunner.runCapture(executable: ffprobeURL, arguments: [
             "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             url.path
-        ]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0,
-              let value = String(data: data, encoding: .utf8),
-              let duration = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+        ])
+        guard let duration = Double(output.trimmingCharacters(in: .whitespacesAndNewlines)),
               duration.isFinite,
               duration > 0 else {
             throw CryptaError.thumbnailFailed
         }
         return duration
-    }
-
-    private static func ffmpegExecutableURL() -> URL? {
-        let fileManager = FileManager.default
-        let candidates = [
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/usr/bin/ffmpeg"
-        ]
-        return candidates
-            .map { URL(fileURLWithPath: $0) }
-            .first { fileManager.isExecutableFile(atPath: $0.path) }
-    }
-
-    nonisolated private static func ffprobeExecutableURL() -> URL? {
-        let fileManager = FileManager.default
-        let candidates = [
-            "/opt/homebrew/bin/ffprobe",
-            "/usr/local/bin/ffprobe",
-            "/usr/bin/ffprobe"
-        ]
-        return candidates
-            .map { URL(fileURLWithPath: $0) }
-            .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
     private static func thumbnailSeconds(for duration: Double?) -> Double {

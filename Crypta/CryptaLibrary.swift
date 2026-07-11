@@ -7,7 +7,7 @@ import SwiftUI
 @MainActor
 final class CryptaLibrary {
     var groups: [LibraryGroup] = []
-    private(set) var selectedGroupID: String? = nil {
+    var selectedGroupID: String? = nil {
         didSet { selectFirstVideoIfNeeded() }
     }
     var selectedVideoIDs: Set<CryptaVideo.ID> = [] {
@@ -31,31 +31,20 @@ final class CryptaLibrary {
     private(set) var unlockedGroupIDs: Set<String> = []
     var errorMessage: String?
 
-    private let store = CryptaStore()
+    let store = CryptaStore()
     private var playerWindowController: PlayerWindowController?
     private var playerGroupID: String?
     private var quickLookPreviewController = QuickLookPreviewController()
     private var quickLookGroupID: String?
     private var extendedLockTask: Task<Void, Never>?
     private var playbackPositionSaveTasks: [CryptaVideo.ID: Task<Void, Never>] = [:]
-    private var externalMediaLeases: [pid_t: [DecryptedMediaLease]] = [:]
-    private var externalPlayerTerminationObserver: NSObjectProtocol?
     private var subtitleTask: Task<Void, Never>?
     private let mediaSessions: DecryptedMediaSessionManager
+    private let externalApplications = ExternalMediaApplicationController()
     private(set) var subtitleJob: SubtitleJobProgress?
 
     init(mediaSessions: DecryptedMediaSessionManager? = nil) {
         self.mediaSessions = mediaSessions ?? .shared
-        externalPlayerTerminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didTerminateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            Task { @MainActor [weak self] in
-                self?.handleExternalApplicationTermination(application)
-            }
-        }
     }
 
     var selectedGroup: LibraryGroup? {
@@ -274,16 +263,6 @@ final class CryptaLibrary {
         }
     }
 
-    func importVideos(from urls: [URL]) async {
-        await importFiles(from: urls)
-    }
-
-    func playSelectedVideo() async {
-        guard canAccessSelectedGroup else { return }
-        guard let video = selectedVideo else { return }
-        await play(video)
-    }
-
     func requestGenerateSubtitles(_ video: CryptaVideo) {
         guard canGenerateSubtitles(for: video) else { return }
         if subtitleJob?.videoID == video.id {
@@ -375,7 +354,6 @@ final class CryptaLibrary {
             let playerWindowController = PlayerWindowController(
                 title: video.displayName,
                 playerItem: playerItem,
-                mediaLease: nil,
                 inMemoryPlaybackSource: inMemoryPlaybackSource,
                 startTimeSeconds: resumePosition(for: video),
                 onProgress: { [weak self] seconds in
@@ -416,18 +394,6 @@ final class CryptaLibrary {
         } catch {
             showToast("重命名失败", kind: .error)
             errorMessage = "重命名失败：\(error.localizedDescription)"
-        }
-    }
-
-    func encrypt(_ video: CryptaVideo) async {
-        guard video.storageState == .plain else { return }
-        let didSucceed = await transform(video) { store, video in
-            try store.encryptPlainVideo(video)
-        }
-        if didSucceed {
-            selectFirstVideoIfNeeded()
-            showToast("已加密")
-            playEncryptedVideoAddedSound()
         }
     }
 
@@ -542,112 +508,6 @@ final class CryptaLibrary {
         primarySelectedVideoID = visibleVideos.first?.id
     }
 
-    func createGroup(name: String, encryptionLevel: EncryptionLevel, mediaType: MediaType) async {
-        let group = LibraryGroup(name: name, encryptionLevel: encryptionLevel, mediaType: mediaType)
-        do {
-            try store.createGroup(group)
-            groups.append(group)
-            if selectedGroupID == nil {
-                selectedGroupID = group.id
-            }
-            showToast("已创建保险箱")
-        } catch {
-            showToast("创建保险箱失败", kind: .error)
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func renameGroup(_ request: EditGroupRequest, to newName: String) async {
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        do {
-            try store.renameGroup(id: request.group.id, to: trimmed)
-            if let index = groups.firstIndex(where: { $0.id == request.group.id }) {
-                groups[index].name = trimmed
-            }
-            editGroupRequest = nil
-            showToast("已重命名")
-        } catch {
-            showToast("重命名失败", kind: .error)
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func deleteGroup(_ group: LibraryGroup) async {
-        guard !videos.contains(where: { $0.libraryKind.rawValue == group.id }) else {
-            showToast("保险箱内仍有文件，无法删除", kind: .error)
-            return
-        }
-        do {
-            try store.deleteGroup(id: group.id)
-            lockGroupAccess(group.id)
-            groups.removeAll { $0.id == group.id }
-            if selectedGroupID == group.id {
-                selectedGroupID = groups.first?.id
-            }
-            showToast("已删除保险箱")
-        } catch {
-            showToast("删除保险箱失败", kind: .error)
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func requestEditGroup(_ group: LibraryGroup) {
-        editGroupRequest = EditGroupRequest(group: group)
-    }
-
-    func moveGroups(from source: IndexSet, to destination: Int) {
-        var updated = groups
-        updated.move(fromOffsets: source, toOffset: destination)
-        let previous = groups
-        groups = updated
-        do {
-            try store.saveGroupOrder(updated)
-        } catch {
-            groups = previous
-            showToast("调整顺序失败", kind: .error)
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private func delete(_ video: CryptaVideo) async {
-        do {
-            if quickLookPreviewController.isPreviewing(video) {
-                quickLookPreviewController.close()
-                quickLookGroupID = nil
-            }
-            try store.delete(video)
-            VideoThumbnailLoader.removeCachedThumbnail(for: video)
-            videos.removeAll { $0.id == video.id }
-            deleteRequest = nil
-            selectFirstVideoIfNeeded()
-            showToast("已删除")
-        } catch {
-            showToast("删除失败", kind: .error)
-            errorMessage = "删除失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func transform(
-        _ video: CryptaVideo,
-        operation: @escaping @Sendable (CryptaStore, CryptaVideo) throws -> CryptaVideo
-    ) async -> Bool {
-        do {
-            isWorking = true
-            defer { isWorking = false }
-            let store = self.store
-            let updated = try await Task.detached(priority: .userInitiated) {
-                try operation(store, video)
-            }.value
-            replace(updated)
-            return true
-        } catch {
-            showToast("操作失败", kind: .error)
-            errorMessage = error.localizedDescription
-            return false
-        }
-    }
-
     private func replace(_ updated: CryptaVideo) {
         if let index = videos.firstIndex(where: { $0.id == updated.id }) {
             videos[index] = updated
@@ -688,7 +548,7 @@ final class CryptaLibrary {
         primarySelectedVideoID = visibleVideos.first { selectedVideoIDs.contains($0.id) }?.id
     }
 
-    private func showToast(_ message: String, kind: CryptaToast.Kind = .success) {
+    func showToast(_ message: String, kind: CryptaToast.Kind = .success) {
         withAnimation(.spring(duration: 0.24, bounce: 0.18)) {
             toast = CryptaToast(message: message, kind: kind)
         }
@@ -702,8 +562,7 @@ final class CryptaLibrary {
 
             let acquiredLease = try await mediaSessions.acquireMediaLease(for: video, store: store)
             lease = acquiredLease
-            let application = try await openInIINA(acquiredLease.url)
-            retainExternalLease(acquiredLease, for: application)
+            try await externalApplications.open(acquiredLease, with: .iina)
             lease = nil
             showToast("已交给 IINA 播放")
         } catch {
@@ -759,8 +618,7 @@ final class CryptaLibrary {
                 store: store
             )
             lease = acquiredLease
-            let application = try await openInPixea(acquiredLease.url)
-            retainExternalLease(acquiredLease, for: application)
+            try await externalApplications.open(acquiredLease, with: .pixea)
             lease = nil
             showToast("已交给 Pixea 打开")
         } catch {
@@ -770,69 +628,11 @@ final class CryptaLibrary {
         }
     }
 
-    private func openInIINA(_ url: URL) async throws -> NSRunningApplication {
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.iinaBundleIdentifier) else {
-            throw CryptaError.externalPlayerUnavailable
-        }
-        return try await open(url, withApplicationAt: appURL)
-    }
-
-    private func openInPixea(_ url: URL) async throws -> NSRunningApplication {
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.pixeaBundleIdentifier) else {
-            throw CryptaError.externalPlayerUnavailable
-        }
-        return try await open(url, withApplicationAt: appURL)
-    }
-
-    private func open(_ url: URL, withApplicationAt appURL: URL) async throws -> NSRunningApplication {
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        return try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<NSRunningApplication, any Error>) in
-            NSWorkspace.shared.open(
-                [url],
-                withApplicationAt: appURL,
-                configuration: configuration
-            ) { application, error in
-                if error != nil || application == nil {
-                    continuation.resume(throwing: CryptaError.externalPlayerOpenFailed)
-                } else if let application {
-                    continuation.resume(returning: application)
-                }
-            }
-        }
-    }
-
-    private func retainExternalLease(
-        _ lease: DecryptedMediaLease,
-        for application: NSRunningApplication
-    ) {
-        let processIdentifier = application.processIdentifier
-        externalMediaLeases[processIdentifier, default: []].append(lease)
-        if application.isTerminated {
-            releaseExternalLeases(for: processIdentifier)
-        }
-    }
-
-    private func handleExternalApplicationTermination(_ application: NSRunningApplication?) {
-        guard let application else { return }
-        releaseExternalLeases(for: application.processIdentifier)
-    }
-
-    private func releaseExternalLeases(for processIdentifier: pid_t) {
-        guard let leases = externalMediaLeases.removeValue(forKey: processIdentifier) else {
-            return
-        }
-        for lease in leases {
-            lease.release()
-        }
-    }
-
     private func canAccess(_ group: LibraryGroup) -> Bool {
         !group.requiresAuthentication || unlockedGroupIDs.contains(group.id)
     }
 
-    private func lockGroupAccess(_ groupID: String) {
+    func lockGroupAccess(_ groupID: String) {
         unlockedGroupIDs.remove(groupID)
 
         if selectedGroupID == groupID {
@@ -946,6 +746,4 @@ final class CryptaLibrary {
         }
     }
 
-    private static let iinaBundleIdentifier = "com.colliderli.iina"
-    private static let pixeaBundleIdentifier = "imagetasks.Pixea"
 }

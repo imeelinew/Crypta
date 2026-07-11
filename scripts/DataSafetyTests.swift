@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CryptoKit
 import Foundation
 
 @main
@@ -11,8 +12,10 @@ struct DataSafetyTests {
         try await testMissingKeyDoesNotCreateReplacementWhenIndexExists()
         try await testMissingKeyDoesNotCreateReplacementWhenVaultContainsProtectedFiles()
         try await testCorruptedIndexFallsBackToBackup()
+        try await testRecoveredIndexDoesNotOverwriteValidBackupWithCorruption()
         try await testVideoLibraryImportsStayEncrypted()
         try await testEncryptedMediaDataSourceReadsRangesWithoutTemporaryPlaintext()
+        try testEncryptedMediaDataSourceRejectsOversizedChunk()
         try await testEncryptedMediaDataSourceIgnoresStaleIndexByteCount()
         try await testInMemoryPlaybackSourceLoadsSyntheticAsset()
         try await testEncryptedVideoThumbnailDoesNotMaterializePlaybackFile()
@@ -31,6 +34,7 @@ struct DataSafetyTests {
         try await testImageGroupLeaseMaterializesWholeVault()
         try await testImageGroupLeaseIgnoresBrokenSiblings()
         try await testStartingAnotherSessionDoesNotDeleteLiveFiles()
+        try await testSessionStartupRejectsReusedProcessIdentifier()
         try await testSessionStartupRemovesOrphanedFiles()
         try await testExportDecryptRemovesVideoFromVaultAfterIndexSave()
         try await testExportDecryptUsesUniqueDestinationName()
@@ -175,6 +179,27 @@ struct DataSafetyTests {
         try expect(recovered.videos.map(\.displayName) == ["First"], "Corrupted index did not recover from backup.")
     }
 
+    private static func testRecoveredIndexDoesNotOverwriteValidBackupWithCorruption() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        try store.saveIndex(CryptaIndex(videos: [harness.sampleVideo(displayName: "Backup", encryptedFileName: "backup-blob")]))
+        try store.saveIndex(CryptaIndex(videos: [harness.sampleVideo(displayName: "Current", encryptedFileName: "current-blob")]))
+        try Data("corrupted".utf8).write(to: harness.locations.encryptedIndex, options: [.atomic])
+
+        let recovered = try store.loadIndex()
+        try expect(recovered.videos.map(\.displayName) == ["Backup"], "Recovery did not return the valid backup.")
+        try store.saveIndex(CryptaIndex(videos: [harness.sampleVideo(displayName: "Repaired", encryptedFileName: "repaired-blob")]))
+
+        try Data("corrupted-again".utf8).write(to: harness.locations.encryptedIndex, options: [.atomic])
+        let recoveredAgain = try store.loadIndex()
+        try expect(
+            recoveredAgain.videos.map(\.displayName) == ["Backup"],
+            "Saving after recovery replaced the valid backup with a corrupted primary index."
+        )
+    }
+
     private static func testVideoLibraryImportsStayEncrypted() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
@@ -315,6 +340,24 @@ struct DataSafetyTests {
             regularFiles(under: harness.locations.cacheRoot).isEmpty,
             "Memory playback source created cache/session files."
         )
+    }
+
+    private static func testEncryptedMediaDataSourceRejectsOversizedChunk() throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let source = harness.root.appendingPathComponent("oversized-blob", isDirectory: false)
+        try Data([0xFF, 0xFF, 0xFF, 0xFF]).write(to: source)
+        do {
+            _ = try EncryptedMediaDataSource(
+                sourceURL: source,
+                originalExtension: "mp4",
+                key: SymmetricKey(data: harness.keyData)
+            )
+            throw TestFailure("Oversized encrypted chunk length should be rejected.")
+        } catch CryptaError.invalidEncryptedFile {
+            // Expected.
+        }
     }
 
     private static func testEncryptedMediaDataSourceIgnoresStaleIndexByteCount() async throws {
@@ -541,7 +584,7 @@ struct DataSafetyTests {
         }
 
         let task = Task {
-            try await SubtitleProcessRunner.run(executable: sleepURL, arguments: ["5"])
+            try await ExternalToolRunner.run(executable: sleepURL, arguments: ["5"])
         }
         try await Task.sleep(for: .milliseconds(100))
         task.cancel()
@@ -550,7 +593,18 @@ struct DataSafetyTests {
             try await task.value
             throw TestFailure("Cancelled subtitle process unexpectedly succeeded.")
         } catch is CancellationError {
-            return
+            // Expected.
+        }
+
+        let cancelledBeforeLaunch = Task {
+            try await ExternalToolRunner.run(executable: sleepURL, arguments: ["5"])
+        }
+        cancelledBeforeLaunch.cancel()
+        do {
+            try await cancelledBeforeLaunch.value
+            throw TestFailure("Process cancelled before launch unexpectedly started.")
+        } catch is CancellationError {
+            // Expected.
         }
     }
 
@@ -921,6 +975,42 @@ struct DataSafetyTests {
     }
 
     @MainActor
+    private static func testSessionStartupRejectsReusedProcessIdentifier() async throws {
+        let harness = try StoreHarness()
+        defer { harness.cleanup() }
+
+        let store = CryptaStore(locations: harness.locations, keyStore: InMemoryKeyStore(data: harness.keyData))
+        let video = try await harness.importEncryptedVideo(
+            named: "ReusedPID.mp4",
+            data: Data("stale-plaintext".utf8),
+            store: store
+        )
+        let staleManager = DecryptedMediaSessionManager(
+            cacheRoot: harness.locations.cacheRoot,
+            processStartTimeProvider: { _ in 100 }
+        )
+        let lease = try await staleManager.acquireMediaLease(for: video, store: store)
+        let staleSessionDirectory = lease.url
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        let nextManager = DecryptedMediaSessionManager(
+            cacheRoot: harness.locations.cacheRoot,
+            processStartTimeProvider: { _ in 200 }
+        )
+        try nextManager.start()
+        try expect(
+            !FileManager.default.fileExists(atPath: staleSessionDirectory.path),
+            "A session owned by a reused PID with a different start time was retained."
+        )
+
+        lease.release()
+        staleManager.shutdown()
+        nextManager.shutdown()
+    }
+
+    @MainActor
     private static func testSessionStartupRemovesOrphanedFiles() async throws {
         let harness = try StoreHarness()
         defer { harness.cleanup() }
@@ -1232,7 +1322,6 @@ private final class StoreHarness {
         locations = CryptaStorageLocations(
             vaultPackage: root.appendingPathComponent("Movies/Crypta.vault", isDirectory: true),
             moviesVault: root.appendingPathComponent("Movies/Crypta.vault/Objects", isDirectory: true),
-            applicationSupport: root.appendingPathComponent("Movies/Crypta.vault", isDirectory: true),
             playbackCache: root.appendingPathComponent("Caches/Crypta/Playback", isDirectory: true)
         )
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1243,7 +1332,7 @@ private final class StoreHarness {
     }
 
     func makeIndexPathUnwritableAsDirectory() throws {
-        try FileManager.default.createDirectory(at: locations.applicationSupport, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: locations.vaultPackage, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: locations.encryptedIndex, withIntermediateDirectories: true)
     }
 

@@ -28,6 +28,10 @@ struct NewGroupSheet: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                Text(encryptionLevel.creationDescription)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -41,6 +45,10 @@ struct NewGroupSheet: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                Text(mediaType.creationDescription)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {

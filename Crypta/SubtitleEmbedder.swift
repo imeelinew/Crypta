@@ -6,7 +6,7 @@ nonisolated enum SubtitleEmbedder {
     }
 
     static func embedSubtitles(in videoURL: URL, srtURL: URL) async throws {
-        guard let ffmpegURL = SubtitleProcessRunner.executableURL(named: "ffmpeg") else {
+        guard let ffmpegURL = ExternalToolRunner.executableURL(named: "ffmpeg") else {
             throw CryptaError.subtitleToolUnavailable("ffmpeg")
         }
 
@@ -38,15 +38,15 @@ nonisolated enum SubtitleEmbedder {
             tmpVideo.path
         ]
 
-        try await SubtitleProcessRunner.run(executable: ffmpegURL, arguments: arguments)
+        try await ExternalToolRunner.run(executable: ffmpegURL, arguments: arguments)
         _ = try FileManager.default.replaceItemAt(videoURL, withItemAt: tmpVideo)
     }
 
     static func subtitleStreamCount(at videoURL: URL) throws -> Int {
-        guard let ffprobeURL = SubtitleProcessRunner.executableURL(named: "ffprobe") else {
+        guard let ffprobeURL = ExternalToolRunner.executableURL(named: "ffprobe") else {
             throw CryptaError.subtitleToolUnavailable("ffprobe")
         }
-        let output = try SubtitleProcessRunner.runCapture(
+        let output = try ExternalToolRunner.runCapture(
             executable: ffprobeURL,
             arguments: [
                 "-v", "error",

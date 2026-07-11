@@ -22,7 +22,6 @@ struct SubtitleSmokeTests {
         let locations = CryptaStorageLocations(
             vaultPackage: root.appendingPathComponent("Movies/Crypta.vault", isDirectory: true),
             moviesVault: root.appendingPathComponent("Movies/Crypta.vault/Objects", isDirectory: true),
-            applicationSupport: root.appendingPathComponent("Movies/Crypta.vault", isDirectory: true),
             playbackCache: root.appendingPathComponent("Caches/Crypta/Playback", isDirectory: true)
         )
         let store = CryptaStore(

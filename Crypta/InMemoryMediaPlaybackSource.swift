@@ -130,21 +130,30 @@ nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
         let input = try FileHandle(forReadingFrom: sourceURL)
         defer { try? input.close() }
 
+        let attributes = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        guard let fileSizeValue = attributes[.size] as? NSNumber else {
+            throw CryptaError.invalidEncryptedFile
+        }
+        let fileSize = fileSizeValue.uint64Value
+
         var chunks: [Chunk] = []
         var plaintextOffset: Int64 = 0
         var encryptedOffset: UInt64 = 0
 
         while true {
+            guard encryptedOffset <= fileSize else { throw CryptaError.invalidEncryptedFile }
+            if encryptedOffset == fileSize { break }
+            guard fileSize - encryptedOffset >= 4 else { throw CryptaError.invalidEncryptedFile }
             try input.seek(toOffset: encryptedOffset)
             let prefix = try input.read(upToCount: 4) ?? Data()
-            if prefix.isEmpty { break }
             guard prefix.count == 4 else { throw CryptaError.invalidEncryptedFile }
 
-            let encryptedLength = length(fromPrefix: prefix)
-            let plaintextLength = encryptedLength - 28
-            guard encryptedLength > 28, plaintextLength > 0 else {
+            let encryptedLength = EncryptedMediaFormat.length(fromPrefix: prefix)
+            guard EncryptedMediaFormat.isValidEncryptedChunkLength(encryptedLength),
+                  UInt64(encryptedLength) <= fileSize - encryptedOffset - 4 else {
                 throw CryptaError.invalidEncryptedFile
             }
+            let plaintextLength = encryptedLength - EncryptedMediaFormat.sealedBoxOverhead
 
             chunks.append(
                 Chunk(
@@ -167,12 +176,6 @@ nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
             return try AES.GCM.open(sealedBox, using: key)
         } catch {
             throw CryptaError.decryptionFailed
-        }
-    }
-
-    private static func length(fromPrefix data: Data) -> Int {
-        data.reduce(0) { partial, byte in
-            (partial << 8) | Int(byte)
         }
     }
 

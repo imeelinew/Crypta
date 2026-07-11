@@ -5,7 +5,6 @@ import AVKit
 final class PlayerWindowController: NSObject, NSWindowDelegate {
     private var player: AVPlayer?
     private let title: String
-    private var mediaLease: DecryptedMediaLease?
     private var inMemoryPlaybackSource: InMemoryMediaPlaybackSource?
     private let startTimeSeconds: Double
     private let onProgress: @MainActor (Double) -> Void
@@ -23,7 +22,6 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     init(
         title: String,
         playerItem: AVPlayerItem,
-        mediaLease: DecryptedMediaLease?,
         inMemoryPlaybackSource: InMemoryMediaPlaybackSource?,
         startTimeSeconds: Double,
         onProgress: @escaping @MainActor (Double) -> Void,
@@ -31,7 +29,6 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         onClose: @escaping @MainActor () -> Void
     ) {
         self.title = title
-        self.mediaLease = mediaLease
         self.inMemoryPlaybackSource = inMemoryPlaybackSource
         self.startTimeSeconds = startTimeSeconds
         self.onProgress = onProgress
@@ -157,8 +154,6 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         window?.contentView = nil
         window = nil
 
-        mediaLease?.release()
-        mediaLease = nil
         inMemoryPlaybackSource?.invalidate()
         inMemoryPlaybackSource = nil
 
