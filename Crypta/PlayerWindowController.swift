@@ -1,6 +1,30 @@
 import AppKit
 import AVKit
 
+private final class PlayerContentView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if isInTitlebarDragRegion(point) {
+            return self
+        }
+        return super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard isInTitlebarDragRegion(point), let window else {
+            super.mouseDown(with: event)
+            return
+        }
+        window.performDrag(with: event)
+    }
+
+    private func isInTitlebarDragRegion(_ point: NSPoint) -> Bool {
+        guard let window else { return false }
+        let contentLayoutRect = convert(window.contentLayoutRect, from: nil)
+        return point.y >= contentLayoutRect.maxY
+    }
+}
+
 private final class UnlockOverlayView: NSView {
     var onUnlock: (() -> Void)?
 
@@ -43,7 +67,7 @@ private final class UnlockOverlayView: NSView {
 }
 
 @MainActor
-final class PlayerWindowController: NSObject, NSWindowDelegate {
+final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWindowDelegate {
     private var player: AVPlayer?
     private let title: String
     private var inMemoryPlaybackSource: InMemoryMediaPlaybackSource?
@@ -53,7 +77,9 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     private let onClose: @MainActor () -> Void
     private weak var playerView: AVPlayerView?
     private weak var privacyOverlay: NSView?
+    private weak var windowDragRecognizer: NSPanGestureRecognizer?
     private var window: NSWindow?
+    private var windowDragMouseDownEvent: NSEvent?
     private var keyMonitor: Any?
     private var timeObserver: Any?
     private var shouldResumeAfterProtection = false
@@ -97,6 +123,14 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         doubleClickGesture.numberOfClicksRequired = 2
         playerView.addGestureRecognizer(doubleClickGesture)
 
+        let windowDragRecognizer = NSPanGestureRecognizer(
+            target: self,
+            action: #selector(handleWindowDrag(_:))
+        )
+        windowDragRecognizer.delegate = self
+        playerView.addGestureRecognizer(windowDragRecognizer)
+        self.windowDragRecognizer = windowDragRecognizer
+
         player.replaceCurrentItem(with: playerItem)
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 5, preferredTimescale: 600),
@@ -107,7 +141,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        let contentView = NSView(frame: playerView.frame)
+        let contentView = PlayerContentView(frame: playerView.frame)
         contentView.addSubview(playerView)
         playerView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -130,11 +164,15 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: initialContentSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = title
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = .black
         window.contentView = contentView
         window.contentAspectRatio = initialContentSize
         window.center()
@@ -177,6 +215,8 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         window?.title = isProtected ? "已锁定" : title
         privacyOverlay?.isHidden = !isProtected
         playerView?.controlsStyle = isProtected ? .none : .floating
+        windowDragRecognizer?.isEnabled = !isProtected
+        windowDragMouseDownEvent = nil
         if isProtected {
             window?.makeFirstResponder(privacyOverlay)
             shouldResumeAfterProtection = (player?.rate ?? 0) > 0
@@ -262,6 +302,67 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
     @objc private func handleDoubleClick(_ sender: NSClickGestureRecognizer) {
         window?.toggleFullScreen(nil)
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: NSGestureRecognizer,
+        shouldAttemptToRecognizeWith event: NSEvent
+    ) -> Bool {
+        guard gestureRecognizer === windowDragRecognizer,
+              !isProtected,
+              event.type == .leftMouseDown,
+              canStartWindowDrag(at: event) else {
+            windowDragMouseDownEvent = nil
+            return false
+        }
+        windowDragMouseDownEvent = event
+        return true
+    }
+
+    @objc private func handleWindowDrag(_ sender: NSPanGestureRecognizer) {
+        guard sender.state == .began,
+              let event = windowDragMouseDownEvent,
+              let window else {
+            return
+        }
+        windowDragMouseDownEvent = nil
+        window.performDrag(with: event)
+
+        sender.isEnabled = false
+        sender.isEnabled = !isProtected
+    }
+
+    private func canStartWindowDrag(at event: NSEvent) -> Bool {
+        guard let playerView else { return false }
+        let point = playerView.convert(event.locationInWindow, from: nil)
+        guard let hitView = playerView.hitTest(point) else { return false }
+        guard hitView !== playerView else { return true }
+
+        var candidate: NSView? = hitView
+        while let view = candidate, view !== playerView {
+            if view is NSControl || isCompactPlaybackControlContainer(view, in: playerView) {
+                return false
+            }
+            candidate = view.superview
+        }
+        return true
+    }
+
+    private func isCompactPlaybackControlContainer(_ view: NSView, in playerView: AVPlayerView) -> Bool {
+        let frame = view.convert(view.bounds, to: playerView)
+        let playerArea = playerView.bounds.width * playerView.bounds.height
+        let viewArea = frame.width * frame.height
+        guard playerArea > 0, viewArea < playerArea * 0.75 else {
+            return false
+        }
+        return containsInteractiveControl(view)
+    }
+
+    private func containsInteractiveControl(_ view: NSView) -> Bool {
+        if view is NSControl {
+            return true
+        }
+        return view.subviews.contains(where: containsInteractiveControl)
     }
 
     private func startMonitoringSeekKeys() {
