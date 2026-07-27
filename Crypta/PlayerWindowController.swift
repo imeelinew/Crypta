@@ -1,6 +1,47 @@
 import AppKit
 import AVKit
 
+private final class UnlockOverlayView: NSView {
+    var onUnlock: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        onUnlock?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 49, 76:
+            onUnlock?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onUnlock?()
+        return true
+    }
+}
+
 @MainActor
 final class PlayerWindowController: NSObject, NSWindowDelegate {
     private var player: AVPlayer?
@@ -137,11 +178,17 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         privacyOverlay?.isHidden = !isProtected
         playerView?.controlsStyle = isProtected ? .none : .floating
         if isProtected {
+            window?.makeFirstResponder(privacyOverlay)
             shouldResumeAfterProtection = (player?.rate ?? 0) > 0
             player?.pause()
-        } else if shouldResumeAfterProtection {
-            shouldResumeAfterProtection = false
-            player?.play()
+        } else {
+            if window?.firstResponder === privacyOverlay {
+                window?.makeFirstResponder(playerView)
+            }
+            if shouldResumeAfterProtection {
+                shouldResumeAfterProtection = false
+                player?.play()
+            }
         }
     }
 
@@ -177,24 +224,32 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makePrivacyOverlay() -> NSView {
-        let overlay = NSView()
+        let overlay = UnlockOverlayView()
         overlay.wantsLayer = true
         overlay.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         overlay.isHidden = true
+        overlay.onUnlock = { [weak self] in
+            self?.unlock()
+        }
+        overlay.setAccessibilityElement(true)
+        overlay.setAccessibilityRole(.button)
+        overlay.setAccessibilityLabel("解锁视频")
+        overlay.setAccessibilityHelp("点击任意位置解锁")
 
         let lockedLabel = NSTextField(labelWithString: "已锁定")
         lockedLabel.font = .systemFont(ofSize: 18, weight: .semibold)
         lockedLabel.textColor = .labelColor
         lockedLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let unlockButton = NSButton(title: "解锁视频", target: self, action: #selector(unlockButtonClicked(_:)))
-        unlockButton.bezelStyle = .rounded
-        unlockButton.translatesAutoresizingMaskIntoConstraints = false
+        let unlockHint = NSTextField(labelWithString: "点击任意位置解锁")
+        unlockHint.font = .systemFont(ofSize: 13)
+        unlockHint.textColor = .secondaryLabelColor
+        unlockHint.translatesAutoresizingMaskIntoConstraints = false
 
-        let stackView = NSStackView(views: [lockedLabel, unlockButton])
+        let stackView = NSStackView(views: [lockedLabel, unlockHint])
         stackView.orientation = .vertical
         stackView.alignment = .centerX
-        stackView.spacing = 16
+        stackView.spacing = 10
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
         overlay.addSubview(stackView)
@@ -203,10 +258,6 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
             stackView.centerYAnchor.constraint(equalTo: overlay.centerYAnchor)
         ])
         return overlay
-    }
-
-    @objc private func unlockButtonClicked(_ sender: NSButton) {
-        unlock()
     }
 
     @objc private func handleDoubleClick(_ sender: NSClickGestureRecognizer) {

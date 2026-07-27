@@ -161,10 +161,7 @@ final class CryptaLibrary {
         defer { isAuthenticatingEncryptedSection = false }
         let didAuthenticate = await AuthenticationGate.authenticate(reason: "查看\(group.name)")
 
-        guard didAuthenticate else {
-            showToast("认证未通过", kind: .error)
-            return
-        }
+        guard didAuthenticate else { return }
 
         unlockedGroupIDs.insert(group.id)
         if group.encryptionLevel == .extended, !NSApp.isActive {
