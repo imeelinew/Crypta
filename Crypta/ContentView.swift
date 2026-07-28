@@ -96,6 +96,29 @@ struct ContentView: View {
                 Task { await library.rename(request, to: newName) }
             }
         }
+        .sheet(item: $library.recoveryKeyPresentation) { presentation in
+            RecoveryKeySheet(
+                presentation: presentation,
+                onCopy: {
+                    library.copyRecoveryKey(presentation)
+                },
+                onSave: {
+                    library.saveRecoveryKey(presentation)
+                },
+                onConfirm: {
+                    library.confirmRecoveryKey(presentation)
+                }
+            )
+        }
+        .sheet(item: $library.recoveryAccessPresentation) { presentation in
+            RecoveryAccessSheet(
+                library: library,
+                presentation: presentation
+            )
+        }
+        .sheet(isPresented: $library.migrationSheetPresented) {
+            MigrationSheet(library: library)
+        }
         .sheet(item: $library.editGroupRequest) { request in
             EditGroupNameSheet(request: request) { newName in
                 Task { await library.renameGroup(request, to: newName) }
@@ -120,16 +143,6 @@ struct ContentView: View {
                 Text("将从 Crypta 中删除所选 \(request.videos.count) 个\(library.selectedGroup?.itemNoun ?? "文件")。")
             }
         }
-        .alert("重新生成字幕？", isPresented: subtitleOverwriteAlertBinding, presenting: library.subtitleOverwriteRequest) { request in
-            Button("取消", role: .cancel) {
-                library.subtitleOverwriteRequest = nil
-            }
-            Button("覆盖", role: .destructive) {
-                library.confirmRegenerateSubtitles(request)
-            }
-        } message: { request in
-            Text("将覆盖“\(request.video.displayName)”现有字幕。")
-        }
         .alert("出错了", isPresented: errorAlertBinding, presenting: library.errorMessage) { _ in
             Button("好") {
                 library.errorMessage = nil
@@ -137,19 +150,31 @@ struct ContentView: View {
         } message: { message in
             Text(message)
         }
+        .alert(
+            ApprovedCopy.protectedFormatTitle,
+            isPresented: $library.protectedFormatErrorPresented
+        ) {
+            Button("好") {}
+        } message: {
+            Text(ApprovedCopy.protectedFormatMessage)
+        }
+        .alert(
+            ApprovedCopy.importSourceCleanupTitle,
+            isPresented: sourceCleanupWarningBinding,
+            presenting: library.sourceCleanupWarningCount
+        ) { _ in
+            Button("好") {
+                library.sourceCleanupWarningCount = nil
+            }
+        } message: { count in
+            Text(ApprovedCopy.importSourceCleanupWarning(count: count))
+        }
     }
 
     private var deleteAlertBinding: Binding<Bool> {
         Binding(
             get: { library.deleteRequest != nil },
             set: { if !$0 { library.deleteRequest = nil } }
-        )
-    }
-
-    private var subtitleOverwriteAlertBinding: Binding<Bool> {
-        Binding(
-            get: { library.subtitleOverwriteRequest != nil },
-            set: { if !$0 { library.subtitleOverwriteRequest = nil } }
         )
     }
 
@@ -183,7 +208,7 @@ struct ContentView: View {
         let panel = NSOpenPanel()
         panel.title = "选择解密输出位置"
         panel.prompt = "解密到这里"
-        panel.message = "解密后的\(library.selectedGroup?.itemNoun ?? "文件")会从 Crypta 加密库中移除。"
+        panel.message = ApprovedCopy.decryptExportMessage
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -196,6 +221,17 @@ struct ContentView: View {
         Binding(
             get: { library.errorMessage != nil },
             set: { if !$0 { library.errorMessage = nil } }
+        )
+    }
+
+    private var sourceCleanupWarningBinding: Binding<Bool> {
+        Binding(
+            get: { library.sourceCleanupWarningCount != nil },
+            set: {
+                if !$0 {
+                    library.sourceCleanupWarningCount = nil
+                }
+            }
         )
     }
 }

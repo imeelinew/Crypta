@@ -74,6 +74,7 @@ final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWin
     private let startTimeSeconds: Double
     private let onProgress: @MainActor (Double) -> Void
     private let unlock: @MainActor () -> Void
+    private let onFailure: @MainActor () -> Void
     private let onClose: @MainActor () -> Void
     private weak var playerView: AVPlayerView?
     private weak var privacyOverlay: NSView?
@@ -82,6 +83,7 @@ final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWin
     private var windowDragMouseDownEvent: NSEvent?
     private var keyMonitor: Any?
     private var timeObserver: Any?
+    private var statusObservation: NSKeyValueObservation?
     private var shouldResumeAfterProtection = false
     private var isProtected = false
     private var didClose = false
@@ -93,6 +95,7 @@ final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWin
         startTimeSeconds: Double,
         onProgress: @escaping @MainActor (Double) -> Void,
         unlock: @escaping @MainActor () -> Void,
+        onFailure: @escaping @MainActor () -> Void,
         onClose: @escaping @MainActor () -> Void
     ) {
         self.title = title
@@ -100,6 +103,7 @@ final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWin
         self.startTimeSeconds = startTimeSeconds
         self.onProgress = onProgress
         self.unlock = unlock
+        self.onFailure = onFailure
         self.onClose = onClose
         super.init()
 
@@ -132,6 +136,15 @@ final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWin
         self.windowDragRecognizer = windowDragRecognizer
 
         player.replaceCurrentItem(with: playerItem)
+        statusObservation = playerItem.observe(\.status, options: [.initial, .new]) {
+            [weak self] item, _ in
+            guard item.status == .failed else { return }
+            Task { @MainActor [weak self] in
+                guard let self, !didClose else { return }
+                close()
+                onFailure()
+            }
+        }
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 5, preferredTimescale: 600),
             queue: .main
@@ -249,6 +262,8 @@ final class PlayerWindowController: NSObject, NSGestureRecognizerDelegate, NSWin
 
     private func releasePlaybackResources() {
         stopMonitoringSeekKeys()
+        statusObservation?.invalidate()
+        statusObservation = nil
         guard let player else { return }
         if let timeObserver {
             player.removeTimeObserver(timeObserver)

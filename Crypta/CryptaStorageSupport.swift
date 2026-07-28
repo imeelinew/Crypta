@@ -54,6 +54,11 @@ nonisolated enum CryptaVideoImport {
 nonisolated protocol CryptaEncryptionKeyStore: Sendable {
     func readKeyData() throws -> Data?
     func saveKeyData(_ data: Data) throws
+    func deleteKeyData() throws
+}
+
+nonisolated extension CryptaEncryptionKeyStore {
+    func deleteKeyData() throws {}
 }
 
 nonisolated final class CryptaKeychainKeyStore: CryptaEncryptionKeyStore, @unchecked Sendable {
@@ -79,6 +84,13 @@ nonisolated final class CryptaKeychainKeyStore: CryptaEncryptionKeyStore, @unche
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw CryptaError.keychainWriteFailed(status) }
+    }
+
+    func deleteKeyData() throws {
+        let status = SecItemDelete(baseQuery() as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw CryptaError.keychainWriteFailed(status)
+        }
     }
 
     private func baseQuery() -> [String: Any] {

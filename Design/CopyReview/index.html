@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Crypta · 文案审核台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">C</div>
+        <div>
+          <p class="eyebrow">CRYPTA · ARCHITECTURE V2</p>
+          <h1>文案审核台</h1>
+        </div>
+      </div>
+      <div class="privacy-note">
+        <span class="privacy-dot" aria-hidden="true"></span>
+        本地运行 · 不连接保险库 · 不发送数据
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">CHANGE CONTROL / 01</p>
+          <h2>先确认语言，<br>再改动产品。</h2>
+          <p class="hero-description">
+            这里集中列出 v2 架构需要新增或可能调整的所有用户界面文案。
+            审核结果只会导出为一个 JSON 文件；在你明确确认之前，macOS App 内的现有文案保持不变。
+          </p>
+        </div>
+        <div class="hero-summary" aria-label="审核进度">
+          <div class="summary-ring" id="progressRing">
+            <strong id="progressValue">0%</strong>
+            <span>已决定</span>
+          </div>
+          <dl>
+            <div>
+              <dt id="totalCount">0</dt>
+              <dd>待审条目</dd>
+            </div>
+            <div>
+              <dt id="approvedCount">0</dt>
+              <dd>批准新版</dd>
+            </div>
+            <div>
+              <dt id="editedCount">0</dt>
+              <dd>编辑后批准</dd>
+            </div>
+            <div>
+              <dt id="keptCount">0</dt>
+              <dd>保留原文</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="审核筛选">
+        <div class="filter-tabs" role="tablist" aria-label="按状态筛选">
+          <button class="filter-tab is-active" data-filter="all" role="tab">全部</button>
+          <button class="filter-tab" data-filter="pending" role="tab">待决定</button>
+          <button class="filter-tab" data-filter="approved" role="tab">已批准</button>
+          <button class="filter-tab" data-filter="edited" role="tab">已编辑</button>
+          <button class="filter-tab" data-filter="kept" role="tab">保留原文</button>
+        </div>
+        <label class="search">
+          <span class="sr-only">搜索文案</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z"></path>
+          </svg>
+          <input id="searchInput" type="search" placeholder="搜索场景或文案">
+        </label>
+      </section>
+
+      <section class="review-list" id="reviewList" aria-live="polite"></section>
+
+      <section class="empty-state" id="emptyState" hidden>
+        <p class="eyebrow">NO MATCHES</p>
+        <h2>没有符合条件的条目</h2>
+        <p>换一个筛选条件，或清除搜索内容。</p>
+      </section>
+    </main>
+
+    <footer class="decision-bar">
+      <div>
+        <strong id="remainingCount">尚有 0 条待决定</strong>
+        <span>决定保存在当前浏览器，不会自动改动 App。</span>
+      </div>
+      <div class="footer-actions">
+        <button class="button button-secondary" id="resetButton">重置审核</button>
+        <button class="button button-primary" id="exportButton">导出审核结果</button>
+      </div>
+    </footer>
+  </div>
+
+  <dialog id="resetDialog">
+    <form method="dialog">
+      <p class="eyebrow">RESET REVIEW</p>
+      <h2>重置全部审核决定？</h2>
+      <p>这会清除当前浏览器中保存的状态与编辑内容，不会改动 Crypta App。</p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" value="cancel">取消</button>
+        <button class="button button-danger" id="confirmReset" value="confirm">重置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="reviewCardTemplate">
+    <article class="review-card">
+      <div class="card-index" aria-hidden="true"></div>
+      <div class="card-main">
+        <header class="card-header">
+          <div>
+            <p class="card-area"></p>
+            <h3 class="card-context"></h3>
+          </div>
+          <span class="status-badge"></span>
+        </header>
+        <p class="card-rationale"></p>
+        <div class="copy-grid">
+          <section class="copy-panel old-copy">
+            <div class="copy-label">
+              <span>当前文案</span>
+              <code class="source-location"></code>
+            </div>
+            <p class="old-value"></p>
+          </section>
+          <section class="copy-panel new-copy">
+            <label class="copy-label">
+              <span>拟议文案</span>
+              <span class="editable-label">可直接编辑</span>
+            </label>
+            <textarea class="new-value" rows="3"></textarea>
+          </section>
+        </div>
+        <div class="card-actions" role="group" aria-label="审核决定">
+          <button class="decision-button keep-button" data-decision="kept">保留原文</button>
+          <button class="decision-button approve-button" data-decision="approved">批准新版</button>
+          <button class="decision-button edit-button" data-decision="edited">使用我的修改</button>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <script src="./app.js"></script>
+</body>
+</html>

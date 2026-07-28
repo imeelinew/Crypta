@@ -213,66 +213,6 @@ nonisolated final class CryptaStore: @unchecked Sendable {
         try encrypted.write(to: thumbnailURL(for: video, in: locations.thumbnailCache), options: [.atomic])
     }
 
-    func commitModifiedVideo(at modifiedVideoURL: URL, for video: CryptaVideo) throws -> CryptaVideo {
-        try locations.prepareDirectories()
-        return try replaceStoredVideo(
-            with: modifiedVideoURL,
-            for: video,
-            hasEmbeddedSubtitles: true
-        )
-    }
-
-    private func replaceStoredVideo(
-        with newVideoURL: URL,
-        for video: CryptaVideo,
-        hasEmbeddedSubtitles: Bool
-    ) throws -> CryptaVideo {
-        try withIndexMutation {
-            var index = try loadIndex()
-            guard let indexPosition = index.videos.firstIndex(where: { $0.id == video.id }) else {
-                throw CryptaError.missingIndexEntry
-            }
-
-            let newByteCount = try fileByteCount(at: newVideoURL)
-            var updated = index.videos[indexPosition]
-            updated.hasEmbeddedSubtitles = hasEmbeddedSubtitles
-            updated.byteCount = newByteCount
-
-            switch updated.storageState {
-            case .plain:
-                guard let plainFileName = updated.plainFileName else { throw CryptaError.missingVideoFile }
-                let plainURL = locations.moviesVault.appendingPathComponent(plainFileName, isDirectory: false)
-                let replacementURL = plainURL.deletingLastPathComponent()
-                    .appendingPathComponent(".crypta-replace-\(UUID().uuidString).\(updated.originalExtension)", isDirectory: false)
-                try FileManager.default.copyItem(at: newVideoURL, to: replacementURL)
-                _ = try FileManager.default.replaceItemAt(plainURL, withItemAt: replacementURL)
-            case .encrypted:
-                guard let oldEncryptedFileName = updated.encryptedFileName else { throw CryptaError.missingVideoFile }
-                let oldEncryptedURL = locations.moviesVault.appendingPathComponent(oldEncryptedFileName, isDirectory: false)
-                let newEncryptedFileName = randomBlobName()
-                let newEncryptedURL = locations.moviesVault.appendingPathComponent(newEncryptedFileName, isDirectory: false)
-                try encryptFile(from: newVideoURL, to: newEncryptedURL)
-                updated.encryptedFileName = newEncryptedFileName
-                index.videos[indexPosition] = updated
-                try saveIndex(index)
-                try? FileManager.default.removeItem(at: oldEncryptedURL)
-                return updated
-            }
-
-            index.videos[indexPosition] = updated
-            try saveIndex(index)
-            return updated
-        }
-    }
-
-    private func fileByteCount(at url: URL) throws -> Int64 {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard let size = attributes[.size] as? NSNumber else {
-            throw CryptaError.missingVideoFile
-        }
-        return size.int64Value
-    }
-
     func deleteThumbnail(for video: CryptaVideo) {
         try? FileManager.default.removeItem(at: thumbnailURL(for: video, in: locations.thumbnailCache))
     }

@@ -84,9 +84,25 @@ final class DecryptedMediaSessionManager {
         guard let processStartTime = processStartTimeProvider(processIdentifier) else {
             throw CryptaError.temporarySessionFailed
         }
-        try fileManager.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: sessionsRoot,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: sessionsRoot.path
+        )
         try cleanupOrphanedSessions()
-        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: sessionDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: sessionDirectory.path
+        )
         try Data("\(processIdentifier)".utf8).write(
             to: sessionDirectory.appendingPathComponent("owner.pid", isDirectory: false),
             options: [.atomic]
@@ -106,6 +122,16 @@ final class DecryptedMediaSessionManager {
         for task in imageGroupTasks.values {
             task.cancel()
         }
+        let externalResourceDirectories = Set(
+            resources.values.map(\.directoryURL)
+        ).filter {
+            !$0.standardizedFileURL.path.hasPrefix(
+                sessionDirectory.standardizedFileURL.path + "/"
+            )
+        }
+        for directory in externalResourceDirectories {
+            try? fileManager.removeItem(at: directory)
+        }
         imageGroupTasks.removeAll()
         imageGroupTaskIDs.removeAll()
         imageGroupSnapshots.removeAll()
@@ -113,6 +139,68 @@ final class DecryptedMediaSessionManager {
         leaseResourceIDs.removeAll()
         try? fileManager.removeItem(at: sessionDirectory)
         didStart = false
+    }
+
+    func adoptPlaybackURL(_ playback: PlaybackURL) throws -> DecryptedMediaLease {
+        try start()
+        let resourceID = UUID()
+        let sourceCleanupURL = playback.cleanupURL ?? playback.url
+        let sourceRoot = sourceCleanupURL.standardizedFileURL
+            .resolvingSymlinksInPath()
+        let sourceMedia = playback.url.standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard sourceMedia.path == sourceRoot.path
+                || sourceMedia.path.hasPrefix(sourceRoot.path + "/") else {
+            throw CryptaError.temporarySessionFailed
+        }
+
+        let adoptedRoot = sessionDirectory.appendingPathComponent(
+            "Adopted",
+            isDirectory: true
+        )
+        let cleanupURL = adoptedRoot.appendingPathComponent(
+            resourceID.uuidString,
+            isDirectory: true
+        )
+        try fileManager.createDirectory(
+            at: adoptedRoot,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+
+        let adoptedMediaURL: URL
+        do {
+            if sourceMedia.path == sourceRoot.path {
+                try fileManager.createDirectory(
+                    at: cleanupURL,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                adoptedMediaURL = cleanupURL.appendingPathComponent(
+                    playback.url.lastPathComponent,
+                    isDirectory: false
+                )
+                try fileManager.moveItem(at: sourceCleanupURL, to: adoptedMediaURL)
+            } else {
+                try fileManager.moveItem(at: sourceCleanupURL, to: cleanupURL)
+                let relativePath = String(
+                    sourceMedia.path.dropFirst(sourceRoot.path.count + 1)
+                )
+                adoptedMediaURL = cleanupURL.appendingPathComponent(
+                    relativePath,
+                    isDirectory: false
+                )
+            }
+        } catch {
+            try? fileManager.removeItem(at: cleanupURL)
+            throw error
+        }
+
+        resources[resourceID] = Resource(
+            directoryURL: cleanupURL,
+            leaseCount: 0
+        )
+        return makeLease(resourceID: resourceID, url: adoptedMediaURL)
     }
 
     func acquireMediaLease(for video: CryptaVideo, store: CryptaStore) async throws -> DecryptedMediaLease {

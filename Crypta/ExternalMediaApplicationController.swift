@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class ExternalMediaApplicationController {
-    enum Target {
+    enum Target: Equatable {
         case iina
         case pixea
 

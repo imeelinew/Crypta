@@ -33,7 +33,23 @@ struct VideoListPage: View {
 
     var body: some View {
         Group {
-            if library.groups.isEmpty {
+            if library.isRecoveryAccessRequired {
+                ContentUnavailableView {
+                    Label(
+                        ApprovedCopy.recoveryAccessTitle,
+                        systemImage: "key.fill"
+                    )
+                } description: {
+                    Text(ApprovedCopy.recoveryAccessMessage)
+                } actions: {
+                    Button(ApprovedCopy.recoveryAccessButton) {
+                        library.presentRecoveryAccess()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear)
+            } else if library.groups.isEmpty {
                 ContentUnavailableView {
                     Label("无保险箱", systemImage: "folder.badge.plus")
                 } description: {
@@ -48,6 +64,11 @@ struct VideoListPage: View {
                         isAuthenticating: library.isAuthenticatingEncryptedSection
                     ) {
                         Task { await library.unlockEncryptedSection() }
+                    } recover: {
+                        guard let vaultID = UUID(uuidString: group.id) else {
+                            return
+                        }
+                        library.presentRecoveryAccess(for: vaultID)
                     }
                 } else {
                     VStack(spacing: 0) {
@@ -68,9 +89,8 @@ struct VideoListPage: View {
                             AppKitVideoList(
                                 videos: library.visibleVideos,
                                 selectedVideoIDs: library.selectedVideoIDs,
-                                subtitleJob: library.subtitleJob,
-                                canGenerateSubtitles: { library.canGenerateSubtitles(for: $0) },
-                                subtitleActionTitle: { library.subtitleActionTitle(for: $0) },
+                                cachedThumbnail: { library.cachedThumbnail(for: $0) },
+                                thumbnail: { await library.thumbnail(for: $0) },
                                 onSelectionChange: { ids, primaryID in
                                     library.selectVideoIDs(ids, primaryID: primaryID)
                                 },
@@ -83,9 +103,6 @@ struct VideoListPage: View {
                                 },
                                 onSelectAll: {
                                     library.selectAllVisibleVideos()
-                                },
-                                onGenerateSubtitles: { video in
-                                    library.requestGenerateSubtitles(video)
                                 },
                                 onRename: { video in
                                     library.requestRename(video)
@@ -185,6 +202,7 @@ private struct LockedEncryptedSectionView: View {
     let group: LibraryGroup
     let isAuthenticating: Bool
     let unlock: () -> Void
+    let recover: () -> Void
 
     var body: some View {
         VStack(spacing: 18) {
@@ -192,13 +210,17 @@ private struct LockedEncryptedSectionView: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(.secondary)
 
-            Text("已加密")
+            Text(ApprovedCopy.lockedVaultHeading)
                 .font(.title3.weight(.semibold))
 
             Button(buttonTitle) {
                 unlock()
             }
             .disabled(isAuthenticating)
+
+            Button(ApprovedCopy.recoveryAccessTitle, action: recover)
+                .buttonStyle(.link)
+                .disabled(isAuthenticating)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
@@ -208,21 +230,19 @@ private struct LockedEncryptedSectionView: View {
         if isAuthenticating {
             return "正在验证"
         }
-        return "解锁\(group.itemNoun)"
+        return ApprovedCopy.unlockVaultButton
     }
 }
 
 private struct AppKitVideoList: NSViewRepresentable {
     let videos: [CryptaVideo]
     let selectedVideoIDs: Set<CryptaVideo.ID>
-    let subtitleJob: SubtitleJobProgress?
-    let canGenerateSubtitles: (CryptaVideo) -> Bool
-    let subtitleActionTitle: (CryptaVideo) -> String
+    let cachedThumbnail: @MainActor (CryptaVideo) -> NSImage?
+    let thumbnail: @MainActor (CryptaVideo) async -> NSImage?
     let onSelectionChange: (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void
     let onDoubleClick: (CryptaVideo) -> Void
     let onSpacePreview: () -> Void
     let onSelectAll: () -> Void
-    let onGenerateSubtitles: (CryptaVideo) -> Void
     let onRename: (CryptaVideo) -> Void
     let onDelete: (CryptaVideo) -> Void
 
@@ -230,14 +250,12 @@ private struct AppKitVideoList: NSViewRepresentable {
         Coordinator(
             videos: videos,
             selectedVideoIDs: selectedVideoIDs,
-            subtitleJob: subtitleJob,
-            canGenerateSubtitles: canGenerateSubtitles,
-            subtitleActionTitle: subtitleActionTitle,
+            cachedThumbnail: cachedThumbnail,
+            thumbnail: thumbnail,
             onSelectionChange: onSelectionChange,
             onDoubleClick: onDoubleClick,
             onSpacePreview: onSpacePreview,
             onSelectAll: onSelectAll,
-            onGenerateSubtitles: onGenerateSubtitles,
             onRename: onRename,
             onDelete: onDelete
         )
@@ -251,14 +269,12 @@ private struct AppKitVideoList: NSViewRepresentable {
         context.coordinator.update(
             videos: videos,
             selectedVideoIDs: selectedVideoIDs,
-            subtitleJob: subtitleJob,
-            canGenerateSubtitles: canGenerateSubtitles,
-            subtitleActionTitle: subtitleActionTitle,
+            cachedThumbnail: cachedThumbnail,
+            thumbnail: thumbnail,
             onSelectionChange: onSelectionChange,
             onDoubleClick: onDoubleClick,
             onSpacePreview: onSpacePreview,
             onSelectAll: onSelectAll,
-            onGenerateSubtitles: onGenerateSubtitles,
             onRename: onRename,
             onDelete: onDelete
         )
@@ -267,14 +283,12 @@ private struct AppKitVideoList: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, VideoTableViewActionDelegate, HoverTableViewDelegate {
         var videos: [CryptaVideo]
         var selectedVideoIDs: Set<CryptaVideo.ID>
-        var subtitleJob: SubtitleJobProgress?
-        var canGenerateSubtitles: (CryptaVideo) -> Bool
-        var subtitleActionTitle: (CryptaVideo) -> String
+        var cachedThumbnail: @MainActor (CryptaVideo) -> NSImage?
+        var thumbnail: @MainActor (CryptaVideo) async -> NSImage?
         var onSelectionChange: (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void
         var onDoubleClick: (CryptaVideo) -> Void
         var onSpacePreview: () -> Void
         var onSelectAll: () -> Void
-        var onGenerateSubtitles: (CryptaVideo) -> Void
         var onRename: (CryptaVideo) -> Void
         var onDelete: (CryptaVideo) -> Void
         private weak var scrollView: NSScrollView?
@@ -285,27 +299,23 @@ private struct AppKitVideoList: NSViewRepresentable {
         init(
             videos: [CryptaVideo],
             selectedVideoIDs: Set<CryptaVideo.ID>,
-            subtitleJob: SubtitleJobProgress?,
-            canGenerateSubtitles: @escaping (CryptaVideo) -> Bool,
-            subtitleActionTitle: @escaping (CryptaVideo) -> String,
+            cachedThumbnail: @escaping @MainActor (CryptaVideo) -> NSImage?,
+            thumbnail: @escaping @MainActor (CryptaVideo) async -> NSImage?,
             onSelectionChange: @escaping (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void,
             onDoubleClick: @escaping (CryptaVideo) -> Void,
             onSpacePreview: @escaping () -> Void,
             onSelectAll: @escaping () -> Void,
-            onGenerateSubtitles: @escaping (CryptaVideo) -> Void,
             onRename: @escaping (CryptaVideo) -> Void,
             onDelete: @escaping (CryptaVideo) -> Void
         ) {
             self.videos = videos
             self.selectedVideoIDs = selectedVideoIDs
-            self.subtitleJob = subtitleJob
-            self.canGenerateSubtitles = canGenerateSubtitles
-            self.subtitleActionTitle = subtitleActionTitle
+            self.cachedThumbnail = cachedThumbnail
+            self.thumbnail = thumbnail
             self.onSelectionChange = onSelectionChange
             self.onDoubleClick = onDoubleClick
             self.onSpacePreview = onSpacePreview
             self.onSelectAll = onSelectAll
-            self.onGenerateSubtitles = onGenerateSubtitles
             self.onRename = onRename
             self.onDelete = onDelete
             super.init()
@@ -348,28 +358,24 @@ private struct AppKitVideoList: NSViewRepresentable {
         func update(
             videos: [CryptaVideo],
             selectedVideoIDs: Set<CryptaVideo.ID>,
-            subtitleJob: SubtitleJobProgress?,
-            canGenerateSubtitles: @escaping (CryptaVideo) -> Bool,
-            subtitleActionTitle: @escaping (CryptaVideo) -> String,
+            cachedThumbnail: @escaping @MainActor (CryptaVideo) -> NSImage?,
+            thumbnail: @escaping @MainActor (CryptaVideo) async -> NSImage?,
             onSelectionChange: @escaping (Set<CryptaVideo.ID>, CryptaVideo.ID?) -> Void,
             onDoubleClick: @escaping (CryptaVideo) -> Void,
             onSpacePreview: @escaping () -> Void,
             onSelectAll: @escaping () -> Void,
-            onGenerateSubtitles: @escaping (CryptaVideo) -> Void,
             onRename: @escaping (CryptaVideo) -> Void,
             onDelete: @escaping (CryptaVideo) -> Void
         ) {
-            let shouldReload = self.videos != videos || self.subtitleJob != subtitleJob
+            let shouldReload = self.videos != videos
             self.videos = videos
             self.selectedVideoIDs = selectedVideoIDs
-            self.subtitleJob = subtitleJob
-            self.canGenerateSubtitles = canGenerateSubtitles
-            self.subtitleActionTitle = subtitleActionTitle
+            self.cachedThumbnail = cachedThumbnail
+            self.thumbnail = thumbnail
             self.onSelectionChange = onSelectionChange
             self.onDoubleClick = onDoubleClick
             self.onSpacePreview = onSpacePreview
             self.onSelectAll = onSelectAll
-            self.onGenerateSubtitles = onGenerateSubtitles
             self.onRename = onRename
             self.onDelete = onDelete
             guard let tableView else { return }
@@ -392,7 +398,7 @@ private struct AppKitVideoList: NSViewRepresentable {
                 withIdentifier: VideoTableCellView.reuseIdentifier,
                 owner: self
             ) as? VideoTableCellView ?? VideoTableCellView()
-            cell.configure(video: video, progress: subtitleProgress(for: video))
+            cell.configure(video: video)
             loadThumbnail(for: video, into: cell)
             return cell
         }
@@ -438,14 +444,6 @@ private struct AppKitVideoList: NSViewRepresentable {
             }
             let video = videos[row]
             let menu = NSMenu()
-            if canGenerateSubtitles(video) {
-                menu.addItem(menuItem(
-                    title: subtitleActionTitle(video),
-                    action: #selector(generateSubtitlesFromMenu(_:)),
-                    video: video
-                ))
-                menu.addItem(.separator())
-            }
             menu.addItem(menuItem(title: "重命名", action: #selector(renameFromMenu(_:)), video: video))
             menu.addItem(menuItem(title: "删除", action: #selector(deleteFromMenu(_:)), video: video))
             return menu
@@ -459,11 +457,6 @@ private struct AppKitVideoList: NSViewRepresentable {
                 resolved = -1
             }
             applyHoveredRow(resolved)
-        }
-
-        @objc private func generateSubtitlesFromMenu(_ sender: NSMenuItem) {
-            guard let video = sender.representedObject as? CryptaVideo else { return }
-            onGenerateSubtitles(video)
         }
 
         @objc private func renameFromMenu(_ sender: NSMenuItem) {
@@ -523,20 +516,16 @@ private struct AppKitVideoList: NSViewRepresentable {
         }
 
         private func loadThumbnail(for video: CryptaVideo, into cell: VideoTableCellView) {
-            if let cachedThumbnail = VideoThumbnailLoader.cachedThumbnail(for: video) {
-                cell.setThumbnail(cachedThumbnail, for: video)
+            if let image = cachedThumbnail(video) {
+                cell.setThumbnail(image, for: video)
                 return
             }
             cell.setPlaceholder(for: video)
             Task { @MainActor in
-                let thumbnail = await VideoThumbnailLoader.thumbnail(for: video)
+                let thumbnail = await thumbnail(video)
                 guard cell.videoID == video.id else { return }
                 cell.setThumbnail(thumbnail, for: video)
             }
-        }
-
-        private func subtitleProgress(for video: CryptaVideo) -> SubtitleJobProgress? {
-            subtitleJob?.videoID == video.id ? subtitleJob : nil
         }
 
         private func menuItem(title: String, action: Selector, video: CryptaVideo) -> NSMenuItem {
@@ -711,9 +700,6 @@ private final class VideoTableCellView: NSTableCellView {
     private let thumbnailImageView = AspectFillThumbnailImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let detailField = NSTextField(labelWithString: "")
-    private let statusImageView = NSImageView()
-    private let progressIndicator = NSProgressIndicator()
-    private let progressField = NSTextField(labelWithString: "")
     private let separator = NSBox()
     private var isShowingPlaceholder = false
     var videoID: CryptaVideo.ID?
@@ -734,25 +720,10 @@ private final class VideoTableCellView: NSTableCellView {
         setup()
     }
 
-    func configure(video: CryptaVideo, progress: SubtitleJobProgress?) {
+    func configure(video: CryptaVideo) {
         videoID = video.id
         titleField.stringValue = video.displayName
         detailField.stringValue = video.detailLine
-        if let progress {
-            statusImageView.isHidden = true
-            progressIndicator.isHidden = false
-            progressField.isHidden = false
-            progressIndicator.doubleValue = Double(progress.percent)
-            progressField.stringValue = "\(progress.percent)% \(progress.desc)"
-        } else {
-            progressIndicator.isHidden = true
-            progressField.isHidden = true
-            statusImageView.isHidden = !video.hasEmbeddedSubtitles
-            statusImageView.image = NSImage(
-                systemSymbolName: "captions.bubble",
-                accessibilityDescription: "已有字幕"
-            )
-        }
         applyForeground()
     }
 
@@ -782,8 +753,6 @@ private final class VideoTableCellView: NSTableCellView {
 
         titleField.textColor = primary
         detailField.textColor = secondary
-        statusImageView.contentTintColor = secondary
-        progressField.textColor = secondary
         if isShowingPlaceholder {
             thumbnailImageView.contentTintColor = secondary
         }
@@ -802,20 +771,9 @@ private final class VideoTableCellView: NSTableCellView {
         detailField.font = .systemFont(ofSize: 11)
         detailField.lineBreakMode = .byTruncatingTail
 
-        statusImageView.symbolConfiguration = .init(pointSize: 13, weight: .medium)
-        statusImageView.imageScaling = .scaleProportionallyUpOrDown
-
-        progressIndicator.isIndeterminate = false
-        progressIndicator.minValue = 0
-        progressIndicator.maxValue = 100
-        progressIndicator.controlSize = .small
-        progressField.font = .systemFont(ofSize: 10)
-        progressField.alignment = .right
-        progressField.lineBreakMode = .byTruncatingTail
-
         separator.boxType = .separator
 
-        [thumbnailImageView, titleField, detailField, statusImageView, progressIndicator, progressField, separator].forEach {
+        [thumbnailImageView, titleField, detailField, separator].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -827,25 +785,12 @@ private final class VideoTableCellView: NSTableCellView {
             thumbnailImageView.heightAnchor.constraint(equalToConstant: 38),
 
             titleField.leadingAnchor.constraint(equalTo: thumbnailImageView.trailingAnchor, constant: 12),
-            titleField.trailingAnchor.constraint(lessThanOrEqualTo: statusImageView.leadingAnchor, constant: -12),
+            titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             titleField.topAnchor.constraint(equalTo: topAnchor, constant: 10),
 
             detailField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
             detailField.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
             detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 3),
-
-            statusImageView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            statusImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statusImageView.widthAnchor.constraint(equalToConstant: 18),
-            statusImageView.heightAnchor.constraint(equalToConstant: 18),
-
-            progressIndicator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            progressIndicator.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -6),
-            progressIndicator.widthAnchor.constraint(equalToConstant: 92),
-
-            progressField.trailingAnchor.constraint(equalTo: progressIndicator.trailingAnchor),
-            progressField.topAnchor.constraint(equalTo: progressIndicator.bottomAnchor, constant: 3),
-            progressField.widthAnchor.constraint(equalToConstant: 150),
 
             separator.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),

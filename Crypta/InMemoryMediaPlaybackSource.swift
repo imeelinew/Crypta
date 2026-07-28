@@ -3,7 +3,17 @@ import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 
-nonisolated final class EncryptedMediaDataSource: @unchecked Sendable {
+nonisolated protocol RandomAccessMediaDataSource: AnyObject, Sendable {
+    var byteCount: Int64 { get }
+    var contentTypeIdentifier: String { get }
+    func data(offset: Int64, length: Int) throws -> Data
+    func clearCache()
+}
+
+nonisolated final class EncryptedMediaDataSource:
+    RandomAccessMediaDataSource,
+    @unchecked Sendable
+{
     private struct Chunk: Sendable {
         let encryptedOffset: UInt64
         let encryptedLength: Int
@@ -192,13 +202,13 @@ final class InMemoryMediaPlaybackSource: NSObject {
     private static let scheme = "crypta-memory-media"
     private static let defaultResponseChunkBytes = 1024 * 1024
 
-    private let dataSource: EncryptedMediaDataSource
+    private let dataSource: any RandomAccessMediaDataSource
     private let queue = DispatchQueue(label: "app.crypta.memory-media-loader")
     private let responseChunkBytes: Int
     private var asset: AVURLAsset?
 
     init(
-        dataSource: EncryptedMediaDataSource,
+        dataSource: any RandomAccessMediaDataSource,
         responseChunkBytes: Int = InMemoryMediaPlaybackSource.defaultResponseChunkBytes
     ) {
         self.dataSource = dataSource
@@ -206,13 +216,17 @@ final class InMemoryMediaPlaybackSource: NSObject {
     }
 
     func makePlayerItem(for video: CryptaVideo) -> AVPlayerItem {
-        let extensionName = video.originalExtension.isEmpty ? "bin" : video.originalExtension
+        makePlayerItem(id: video.id, originalExtension: video.originalExtension)
+    }
+
+    func makePlayerItem(id: UUID, originalExtension: String) -> AVPlayerItem {
+        let extensionName = originalExtension.isEmpty ? "bin" : originalExtension
         var components = URLComponents()
         components.scheme = Self.scheme
-        components.host = video.id.uuidString
+        components.host = id.uuidString
         components.path = "/media.\(extensionName)"
 
-        let url = components.url ?? URL(string: "\(Self.scheme)://\(video.id.uuidString)/media.\(extensionName)")!
+        let url = components.url ?? URL(string: "\(Self.scheme)://\(id.uuidString)/media.\(extensionName)")!
         let asset = AVURLAsset(url: url)
         asset.resourceLoader.setDelegate(self, queue: queue)
         self.asset = asset

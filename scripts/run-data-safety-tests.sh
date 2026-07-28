@@ -9,14 +9,9 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 xcrun swiftc \
+  "$ROOT_DIR/Crypta/ApprovedCopy.swift" \
   "$ROOT_DIR/Crypta/Models.swift" \
-  "$ROOT_DIR/Crypta/SubtitleSRT.swift" \
-  "$ROOT_DIR/Crypta/SubtitleConfiguration.swift" \
   "$ROOT_DIR/Crypta/ExternalToolRunner.swift" \
-  "$ROOT_DIR/Crypta/SubtitleNormalizer.swift" \
-  "$ROOT_DIR/Crypta/SubtitleLLMService.swift" \
-  "$ROOT_DIR/Crypta/SubtitleEmbedder.swift" \
-  "$ROOT_DIR/Crypta/SubtitleGenerator.swift" \
   "$ROOT_DIR/Crypta/EncryptedMediaFormat.swift" \
   "$ROOT_DIR/Crypta/CryptaStorageSupport.swift" \
   "$ROOT_DIR/Crypta/CryptaStore.swift" \

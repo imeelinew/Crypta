@@ -18,7 +18,7 @@ struct NewGroupSheet: View {
                 .frame(width: 300)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("访问控制级别")
+                Text(ApprovedCopy.vaultLevelLabel)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 Picker("", selection: $encryptionLevel) {

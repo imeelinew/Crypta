@@ -3,7 +3,9 @@ import SwiftUI
 
 private enum CryptaRuntime {
     static var isRunningTests: Bool {
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["CRYPTA_UI_TESTING"] == "1"
     }
 }
 
@@ -27,13 +29,11 @@ struct CryptaApp: App {
                     library.newGroupFormPresented = true
                 }
                 .keyboardShortcut("n", modifiers: .command)
+                .disabled(library.isRecoveryAccessRequired)
             }
             CommandGroup(replacing: .saveItem) { }
         }
 
-        Settings {
-            CryptaSettingsView()
-        }
     }
 }
 
