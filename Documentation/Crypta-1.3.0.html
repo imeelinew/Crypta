@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crypta 1.3.0 · 存储与加密重构说明</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #0e1418;
+      --ink-soft: #243038;
+      --muted: #5a6a73;
+      --line: rgba(14, 20, 24, 0.12);
+      --paper: #eef3f5;
+      --paper-2: #e2eaee;
+      --surface: rgba(255, 255, 255, 0.72);
+      --teal: #0f7a6c;
+      --teal-deep: #0a5248;
+      --mint: #b8e6d8;
+      --sky: #c9dff0;
+      --warn: #a85b1a;
+      --danger: #9b2f2f;
+      --ok: #1f6b4a;
+      --shadow: 0 28px 80px rgba(14, 20, 24, 0.12);
+      --radius: 18px;
+      --max: 920px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      font-size: 17px;
+      line-height: 1.75;
+      background:
+        radial-gradient(ellipse 70% 45% at 12% -10%, rgba(15, 122, 108, 0.18), transparent 55%),
+        radial-gradient(ellipse 55% 40% at 95% 8%, rgba(120, 170, 200, 0.22), transparent 50%),
+        linear-gradient(180deg, #f7fafb 0%, var(--paper) 28%, #e8f0f2 100%);
+      min-height: 100vh;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.35;
+      background-image:
+        linear-gradient(rgba(14, 20, 24, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(14, 20, 24, 0.03) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,0.55), transparent 70%);
+      z-index: 0;
+    }
+
+    a { color: var(--teal-deep); text-underline-offset: 3px; }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      padding-bottom: 96px;
+    }
+
+    /* —— Hero —— */
+    .hero {
+      padding: 72px 0 56px;
+      animation: rise 0.9s ease both;
+    }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 36px;
+    }
+
+    .brand-mark {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      background: var(--ink);
+      flex-shrink: 0;
+    }
+
+    .brand-mark img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand-name {
+      font-family: Syne, "Noto Sans SC", sans-serif;
+      font-weight: 800;
+      font-size: clamp(2.4rem, 6vw, 3.4rem);
+      letter-spacing: -0.045em;
+      line-height: 1;
+      color: var(--ink);
+    }
+
+    .brand-meta {
+      font-size: 0.92rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    .hero h1 {
+      margin: 0 0 18px;
+      font-family: Syne, "Noto Sans SC", sans-serif;
+      font-weight: 700;
+      font-size: clamp(1.55rem, 3.6vw, 2.15rem);
+      letter-spacing: -0.03em;
+      line-height: 1.25;
+      max-width: 18em;
+    }
+
+    .hero-lead {
+      margin: 0;
+      max-width: 36em;
+      color: var(--ink-soft);
+      font-size: 1.05rem;
+    }
+
+    .version-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 28px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: var(--ink);
+      color: #f2f7f6;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .version-pill span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 0 4px rgba(184, 230, 216, 0.25);
+    }
+
+    /* —— Nav —— */
+    .toc {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      margin: 0 0 48px;
+      padding: 14px 0;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      background: rgba(238, 243, 245, 0.82);
+      border-bottom: 1px solid var(--line);
+      animation: rise 1s 0.08s ease both;
+    }
+
+    .toc-inner {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 4px;
+    }
+
+    .toc a {
+      text-decoration: none;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 6px 10px;
+      border-radius: 8px;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .toc a:hover {
+      color: var(--ink);
+      background: rgba(15, 122, 108, 0.08);
+    }
+
+    /* —— Sections —— */
+    section {
+      padding: 48px 0;
+      border-top: 1px solid var(--line);
+      animation: rise 0.85s ease both;
+    }
+
+    section:nth-of-type(2) { animation-delay: 0.05s; }
+    section:nth-of-type(3) { animation-delay: 0.08s; }
+
+    .section-kicker {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--teal);
+    }
+
+    section h2 {
+      margin: 0 0 14px;
+      font-family: Syne, "Noto Sans SC", sans-serif;
+      font-weight: 700;
+      font-size: clamp(1.45rem, 2.8vw, 1.85rem);
+      letter-spacing: -0.03em;
+      line-height: 1.25;
+    }
+
+    section > .lead {
+      margin: 0 0 28px;
+      max-width: 40em;
+      color: var(--ink-soft);
+    }
+
+    .plain {
+      margin: 0 0 16px;
+      max-width: 42em;
+      color: var(--ink-soft);
+    }
+
+    .plain:last-child { margin-bottom: 0; }
+
+    /* —— Metaphor blocks —— */
+    .metaphor {
+      margin: 28px 0;
+      padding: 22px 24px;
+      border-left: 3px solid var(--teal);
+      background: linear-gradient(90deg, rgba(15, 122, 108, 0.07), transparent 70%);
+      border-radius: 0 var(--radius) var(--radius) 0;
+    }
+
+    .metaphor strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .metaphor p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.98rem;
+    }
+
+    /* —— Compare —— */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      margin: 28px 0;
+      background: var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .compare > div {
+      padding: 22px 24px;
+      background: var(--surface);
+      backdrop-filter: blur(8px);
+    }
+
+    .compare h3 {
+      margin: 0 0 10px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .compare .before h3 { color: var(--muted); }
+    .compare .after h3 { color: var(--teal); }
+
+    .compare ul {
+      margin: 0;
+      padding-left: 1.15em;
+      color: var(--ink-soft);
+      font-size: 0.95rem;
+    }
+
+    .compare li + li { margin-top: 8px; }
+
+    /* —— Steps —— */
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      margin: 24px 0 0;
+      padding: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .steps li {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .steps li:last-child { border-bottom: 0; }
+
+    .steps li::before {
+      content: counter(step, decimal-leading-zero);
+      font-family: Syne, sans-serif;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--teal);
+      line-height: 1.4;
+    }
+
+    .steps strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+    }
+
+    .steps span {
+      color: var(--ink-soft);
+      font-size: 0.96rem;
+    }
+
+    /* —— Levels —— */
+    .levels {
+      display: grid;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .level {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 16px;
+      padding: 18px 0;
+      border-bottom: 1px solid var(--line);
+      align-items: start;
+    }
+
+    .level:last-child { border-bottom: 0; }
+
+    .level-name {
+      font-family: Syne, "Noto Sans SC", sans-serif;
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: -0.02em;
+    }
+
+    .level-name small {
+      display: block;
+      margin-top: 4px;
+      font-family: "Noto Sans SC", sans-serif;
+      font-weight: 500;
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0;
+    }
+
+    .level p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.96rem;
+    }
+
+    /* —— Tree —— */
+    .tree {
+      margin: 24px 0;
+      padding: 22px 24px;
+      font-family: "SF Mono", ui-monospace, Menlo, monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: var(--ink-soft);
+      background: var(--ink);
+      color: #d5e4e0;
+      border-radius: var(--radius);
+      overflow-x: auto;
+      box-shadow: var(--shadow);
+    }
+
+    .tree .hl { color: var(--mint); }
+    .tree .dim { color: #7a918a; }
+
+    /* —— Key stack —— */
+    .key-stack {
+      margin: 28px 0 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .key-layer {
+      padding: 16px 18px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      transition: transform 0.35s ease, box-shadow 0.35s ease;
+    }
+
+    .key-layer:hover {
+      transform: translateX(4px);
+      box-shadow: 0 12px 32px rgba(14, 20, 24, 0.08);
+    }
+
+    .key-layer:nth-child(1) { margin-left: 0; }
+    .key-layer:nth-child(2) { margin-left: 12px; }
+    .key-layer:nth-child(3) { margin-left: 24px; }
+    .key-layer:nth-child(4) { margin-left: 36px; }
+
+    .key-layer h3 {
+      margin: 0 0 4px;
+      font-size: 0.98rem;
+      font-weight: 700;
+    }
+
+    .key-layer p {
+      margin: 0;
+      font-size: 0.9rem;
+      color: var(--ink-soft);
+    }
+
+    /* —— Grid facts —— */
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px 28px;
+      margin-top: 8px;
+    }
+
+    .fact h3 {
+      margin: 0 0 6px;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .fact p {
+      margin: 0;
+      font-size: 0.94rem;
+      color: var(--ink-soft);
+    }
+
+    /* —— Removed / kept —— */
+    .split-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+      margin-top: 24px;
+    }
+
+    .split-list h3 {
+      margin: 0 0 12px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .split-list.gone h3 { color: var(--danger); }
+    .split-list.stay h3 { color: var(--ok); }
+
+    .split-list ul {
+      margin: 0;
+      padding-left: 1.15em;
+      color: var(--ink-soft);
+      font-size: 0.95rem;
+    }
+
+    .split-list li + li { margin-top: 8px; }
+
+    /* —— Table —— */
+    .policy {
+      width: 100%;
+      margin-top: 20px;
+      border-collapse: collapse;
+      font-size: 0.94rem;
+    }
+
+    .policy th,
+    .policy td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    .policy th {
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .policy td:first-child {
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .tag.ext {
+      background: rgba(168, 91, 26, 0.12);
+      color: var(--warn);
+    }
+
+    .tag.int {
+      background: rgba(15, 122, 108, 0.12);
+      color: var(--teal-deep);
+    }
+
+    /* —— Callout —— */
+    .callout {
+      margin: 28px 0 0;
+      padding: 20px 22px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, rgba(15, 122, 108, 0.1), rgba(201, 223, 240, 0.35));
+      border: 1px solid rgba(15, 122, 108, 0.18);
+    }
+
+    .callout p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.96rem;
+    }
+
+    .callout p + p { margin-top: 10px; }
+
+    /* —— Footer —— */
+    footer {
+      margin-top: 24px;
+      padding: 40px 0 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    footer strong {
+      color: var(--ink-soft);
+      font-family: Syne, sans-serif;
+      letter-spacing: -0.02em;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .wrap { width: calc(100% - 28px); }
+      .hero { padding-top: 48px; }
+      .compare,
+      .facts,
+      .split-list { grid-template-columns: 1fr; }
+      .level { grid-template-columns: 1fr; gap: 6px; }
+      .key-layer:nth-child(n) { margin-left: 0; }
+      .toc { position: static; }
+      .brand-name { font-size: 2.2rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="brand-row">
+        <div class="brand-mark">
+          <img src="../.github/assets/logo.png" alt="Crypta" />
+        </div>
+        <div class="brand-text">
+          <div class="brand-name">Crypta</div>
+          <div class="brand-meta">macOS 本地加密媒体库</div>
+        </div>
+      </div>
+      <h1>一次把「怎么存」和「怎么锁」重新想清楚的大版本</h1>
+      <p class="hero-lead">
+        1.3.0 不是换皮肤，而是把保险库的底层换成了全新的 Storage Architecture v2：
+        文件怎么加密、钥匙怎么保管、导入怎么提交、旧库怎么搬迁、播放能不能写出明文——整条链路都重做了。
+      </p>
+      <div class="version-pill"><span></span>版本 1.3.0 · Vault-v2</div>
+    </header>
+
+    <nav class="toc" aria-label="目录">
+      <div class="toc-inner">
+        <a href="#overview">总览</a>
+        <a href="#storage">新家在哪</a>
+        <a href="#keys">钥匙体系</a>
+        <a href="#recovery">恢复密钥</a>
+        <a href="#container">文件保险箱</a>
+        <a href="#import">导入流程</a>
+        <a href="#migration">旧库升级</a>
+        <a href="#playback">播放规则</a>
+        <a href="#session">解锁会话</a>
+        <a href="#boundary">安全边界</a>
+        <a href="#product">产品变化</a>
+        <a href="#removed">去掉了什么</a>
+      </div>
+    </nav>
+
+    <section id="overview">
+      <span class="section-kicker">01 · 总览</span>
+      <h2>一句话：旧仓库拆了，新仓库按「层层上锁」重建</h2>
+      <p class="lead">
+        以前的 Crypta 也能加密，但结构和钥匙关系更「整包」。1.3.0 改成：每个保险箱一把主钥匙，
+        每个媒体文件再有自己的数据钥匙，目录名和缩略图也单独加密；钥匙本身还分「这台 Mac 能开」和「换电脑靠恢复密钥开」两套路径。
+      </p>
+
+      <div class="compare">
+        <div class="before">
+          <h3>以前大致怎样</h3>
+          <ul>
+            <li>库主要在 <code>Movies/Crypta.vault</code></li>
+            <li>密钥主要靠钥匙串保管</li>
+            <li>播放、预览路径上可能留下更多明文痕迹</li>
+            <li>没有独立的、可打印带走的恢复密钥体系</li>
+          </ul>
+        </div>
+        <div class="after">
+          <h3>1.3.0 变成怎样</h3>
+          <ul>
+            <li>正式库在 <code>Application Support/Crypta/Vault-v2/</code></li>
+            <li>目录钥匙、保险箱主钥匙、文件数据钥匙分层</li>
+            <li>标准保险箱才允许受控写出临时明文给外部播放器</li>
+            <li>新建保险箱必须先确认保存了恢复密钥</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="metaphor">
+        <strong>打个比方</strong>
+        <p>
+          把整个 Crypta 想成一栋只有你能进的私人影音库。1.3.0 不是给大门换把锁，
+          而是把「门禁卡、房间钥匙、保险柜密码、万一丢了门禁卡的备用信封」全部重新设计，
+          并且规定：什么情况下允许把影片临时拿出来放进外部播放器，什么情况下只能在库内观看。
+        </p>
+      </div>
+    </section>
+
+    <section id="storage">
+      <span class="section-kicker">02 · 存储布局</span>
+      <h2>新家搬家了：正式数据与临时播放分开住</h2>
+      <p class="lead">
+        正式保险库存放在系统的「应用程序支持」目录里；给外部播放器用的临时明文，只住在缓存区，并且跟当前进程绑定。
+        目录权限默认只有你这个用户能访问。
+      </p>
+
+      <div class="tree">
+<span class="hl">Application Support/Crypta/Vault-v2/</span>
+├── <span class="hl">metadata.sqlite3</span>   <span class="dim"># 索引数据库（敏感字段已加密）</span>
+├── <span class="hl">Objects/</span>            <span class="dim"># 真正的加密媒体文件</span>
+├── <span class="hl">Staging/</span>            <span class="dim"># 导入时的临时工作区</span>
+└── <span class="hl">Thumbnails/</span>         <span class="dim"># 加密缩略图</span>
+
+<span class="hl">Caches/Crypta/</span>
+├── <span class="hl">V2/Playback/</span>       <span class="dim"># 标准保险箱：外部播放前的暂存</span>
+└── <span class="hl">Sessions/…/Adopted/</span> <span class="dim"># 进程专属会话，退出或崩溃后可清理</span>
+      </div>
+
+      <div class="facts">
+        <div class="fact">
+          <h3>数据库里能直接看到什么？</h3>
+          <p>几乎只有随机 ID、排序、数量、时间戳这类「不泄密」的字段。标题、时长、扩展名、缩略图等对你有意义的信息，都会先加密再写入。</p>
+        </div>
+        <div class="fact">
+          <h3>SQLite 怎么更稳？</h3>
+          <p>打开外键约束，使用 WAL，并采用更严格的同步写盘策略，启动时还会做完整性检查，减少「写到一半断电」留下半残数据的风险。</p>
+        </div>
+        <div class="fact">
+          <h3>临时明文怎么清？</h3>
+          <p>正常释放租约、退出 App 都会删掉临时明文。启动时还会核对「是不是当初那个进程」——既看 PID，也看进程启动时间——避免误删、也避免漏删崩溃残留。</p>
+        </div>
+        <div class="fact">
+          <h3>活库只认 v2</h3>
+          <p>应用现在只把 Vault-v2 当作正式库。旧格式不会继续并行使用；打开旧库时会走一次性的安全迁移流程。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="keys">
+      <span class="section-kicker">03 · 钥匙体系</span>
+      <h2>钥匙不再是「一把通吃」，而是一层套一层</h2>
+      <p class="lead">
+        这样设计的好处是：即使某一层材料出了问题，也能尽量缩小影响面；同时也方便「这台电脑日常解锁」和「换机用恢复密钥」分开。
+      </p>
+
+      <div class="key-stack">
+        <div class="key-layer">
+          <h3>① 目录钥匙（Catalog Key）</h3>
+          <p>放在本机钥匙串里。主要用来保护保险箱名字，以及「标准保险箱」在本机的设备封装材料。它是整份目录的总入口之一。</p>
+        </div>
+        <div class="key-layer">
+          <h3>② 保险箱主钥匙（Vault Master Key）</h3>
+          <p>每个保险箱各自一把随机 256 位主钥匙。它保护：该保险箱里的对象元数据、缩略图，以及下面那一层「文件数据钥匙」。</p>
+        </div>
+        <div class="key-layer">
+          <h3>③ 文件数据钥匙（Object DEK）</h3>
+          <p>每个媒体对象再有自己的数据加密钥匙，由保险箱主钥匙「包」起来。真正的影音内容按块加密时用的就是它。</p>
+        </div>
+        <div class="key-layer">
+          <h3>④ 恢复密钥（Recovery Key）</h3>
+          <p>可打印、带校验的 256 位密钥。它能打开一份独立的「恢复信封」，里面装着保险箱主钥匙和目录钥匙——不依赖这台 Mac 的 Secure Enclave 是否还在。</p>
+        </div>
+      </div>
+
+      <div class="metaphor" style="margin-top: 28px;">
+        <strong>标准 vs 扩展 / 最高：本机怎么「包」主钥匙？</strong>
+        <p>
+          <b>标准保险箱</b>：主钥匙用本机设备方式封装，方便你打开 App 就能看，不需要每次 Touch ID。<br />
+          <b>扩展 / 最高</b>：主钥匙走 Secure Enclave（P-256 密钥协商）并要求「用户在场」——也就是 Touch ID / 系统密码这类确认。解锁后主钥匙只活在可撤销的会话里。
+        </p>
+      </div>
+    </section>
+
+    <section id="recovery">
+      <span class="section-kicker">04 · 恢复密钥</span>
+      <h2>丢了本机钥匙也不等于丢光数据——前提是你存好了恢复密钥</h2>
+      <p class="lead">
+        恢复信封和本机设备封装是两套独立通路。钥匙串坏了、换 Mac、Secure Enclave 身份对不上，都可以用恢复密钥在本机重新接上。
+        Crypta 不会在云端替你存一份「能直接解开」的备份。
+      </p>
+
+      <ol class="steps">
+        <li>
+          <div>
+            <strong>新建保险箱必须确认</strong>
+            <span>界面会展示恢复密钥。只有你勾选「我已安全保存」之后，这个保险箱才算真正就绪。元数据里会单独记录「是否已确认」。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>可以换新的恢复密钥</strong>
+            <span>换密钥时，先把新的认证信封写稳，再撤掉旧展示。避免「旧的没了、新的还没落盘」的空窗。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>恢复时先解开目录钥匙</strong>
+            <span>用你选中保险箱的信封，先解密出目录钥匙，校验它能打开加密目录，再写回钥匙串，并给这台设备重新登记该保险箱。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>设备重新登记很小心</strong>
+            <span>会先创建新的不可变钥匙槽位、先提交新信封，确认无误后再退役旧槽位——防止中途失败把设备封装弄成「两头空」。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>恢复可以限定到某个保险箱</strong>
+            <span>避免你拿着 A 保险箱的正确密钥，却误把 B 保险箱的设备槽位悄悄改掉。输入的短语只在内存里解析，成功后从界面清掉，也不会写进日志。</span>
+          </div>
+        </li>
+      </ol>
+
+      <div class="callout">
+        <p><b>你需要记住的唯一「人话」规则：</b>恢复密钥就是万一这台 Mac「认不出你」时的最后一把钥匙。Crypta 不会替你云备份它——保存好、离线放好。</p>
+      </div>
+    </section>
+
+    <section id="container">
+      <span class="section-kicker">05 · 媒体容器</span>
+      <h2>每个文件都是独立的「CRYPTA02」密封罐</h2>
+      <p class="lead">
+        不再把「一大包媒体」当成模糊整体。每个对象是一份带认证的容器：先认身份，再按块加密，还能边播边随机读。
+      </p>
+
+      <div class="facts">
+        <div class="fact">
+          <h3>固定认证头</h3>
+          <p>头部标明格式、所属保险箱、对象 ID、修订号、明文长度、分块几何等信息，并且本身受认证保护，改一个字节都会露馅。</p>
+        </div>
+        <div class="fact">
+          <h3>一层包一层</h3>
+          <p>容器里有一把随机生成的「文件数据钥匙」，再用保险箱主钥匙把它包起来。真正加密影音内容时用的是数据钥匙。</p>
+        </div>
+        <div class="fact">
+          <h3>4 MiB 一块，AES-GCM</h3>
+          <p>媒体按大约 4MB 一块独立认证加密。内置播放器可以跳着读，不必整文件解密成明文文件。</p>
+        </div>
+        <div class="fact">
+          <h3>防篡改很具体</h3>
+          <p>随机数由「每个对象自己的前缀 + 块序号」推导；块认证还绑定头部、序号和精确明文长度。截断、追加、调换块、拼错对象，都会在读取时被发现。</p>
+        </div>
+      </div>
+
+      <div class="metaphor">
+        <strong>为什么这对播放很重要？</strong>
+        <p>
+          受保护保险箱里的视频，可以在内存里按需解密片段给内置播放器，而不必先整段摊开成硬盘上的明文电影文件。
+          既方便拖动进度条，也少留「播完忘了删」的明文副本。
+        </p>
+      </div>
+    </section>
+
+    <section id="import">
+      <span class="section-kicker">06 · 导入提交流程</span>
+      <h2>导入像银行过账：没验完，绝不轻易撕掉原件</h2>
+      <p class="lead">
+        1.3.0 把导入做成严格的「先写加密副本 → 校验 → 再记入目录 → 再考虑删原文件」顺序。任何一步失败，都优先保住你还能用的那份。
+      </p>
+
+      <ol class="steps">
+        <li>
+          <div>
+            <strong>流式写入临时加密容器</strong>
+            <span>明文边读边加密进 Staging，不会先摊一整份明文中间件。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>校验每一个暂存块</strong>
+            <span>所有分块都要通过认证，坏块直接视为导入失败。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>原子移动进 Objects，并同步目录</strong>
+            <span>让加密文件「落户」到正式对象区，尽量避免半移动状态。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>把加密元数据写入 SQLite</strong>
+            <span>标题等信息以加密形式进入索引；这时库才「知道」这个文件存在。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>重新打开并再验一次已提交容器</strong>
+            <span>最终验证通过，才算这笔导入真正完成。</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>只有这时，才可能删除你勾选删除的原文件</strong>
+            <span>若最终验证前失败：回滚未提交的 v2 副本，保留原文件。若验证后删原文件失败：两边都留着，并明确提示你还有多少明文原件需要自行处理。</span>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section id="migration">
+      <span class="section-kicker">07 · 从旧库迁移</span>
+      <h2>升级旧保险库：在内存里搬家，不落明文中间文件</h2>
+      <p class="lead">
+        第一次打开旧版数据时，会进入本机「安全升级」。旧加密块只在迁移进程里解密，立刻流式写进新的 v2 容器——硬盘上不会先出现一整份明文电影再重新加密。
+      </p>
+
+      <div class="facts">
+        <div class="fact">
+          <h3>可中断、可继续</h3>
+          <p>进度只记录阶段和汇总数量，不把标题等敏感信息写进进度文案。已有对象 ID 让「完成过的项」可以幂等跳过，不怕重复跑。</p>
+        </div>
+        <div class="fact">
+          <h3>初始化一次事务做完</h3>
+          <p>目标保险箱创建和首个进度检查点在同一 SQLite 事务里提交。中断后继续时，用已提交的设备封装即可，不必让恢复短语一直留在应用内存里。</p>
+        </div>
+        <div class="fact">
+          <h3>缩略图同样内存换锁</h3>
+          <p>旧缩略图在内存解密后，立刻用目标保险箱的钥匙重新加密写入，不在磁盘上晾明文预览图。</p>
+        </div>
+        <div class="fact">
+          <h3>删旧库最靠后</h3>
+          <p>等所有预期对象都在、并且每个 v2 容器再次通过认证之后，只有在你明确要求清理时，才会移除旧包装和旧钥匙串条目。</p>
+        </div>
+      </div>
+
+      <div class="callout">
+        <p>界面文案会清楚告诉你：Crypta 在本机重新加密；每个文件只有新副本通过完整性验证后，才会删除旧副本。升级失败时会尽量保留仍可用的数据，方便稍后重试。</p>
+      </div>
+    </section>
+
+    <section id="playback">
+      <span class="section-kicker">08 · 播放策略</span>
+      <h2>能不能用外部播放器，由保险箱级别决定——而且是存储层强制的</h2>
+      <p class="lead">
+        以前更多依赖界面约定；现在规则下沉到存储层：扩展 / 最高保险箱就算 UI 想走歪，也无法走「写出明文给外部 App」这条路。
+      </p>
+
+      <table class="policy">
+        <thead>
+          <tr>
+            <th>保险箱级别</th>
+            <th>视频</th>
+            <th>图片</th>
+            <th>日常体验（人话）</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>标准</td>
+            <td><span class="tag ext">外部播放器</span></td>
+            <td><span class="tag ext">外部查看器</span></td>
+            <td>打开即可访问；视频可用 IINA 等外部播放器。播放前在缓存区材料化临时明文，播完 / 退出会清理。</td>
+          </tr>
+          <tr>
+            <td>扩展</td>
+            <td><span class="tag int">仅内置</span></td>
+            <td><span class="tag int">仅内置</span></td>
+            <td>需解锁；只在 Crypta 内观看。切换保险箱后仍可保持解锁，也可手动上锁；失焦后可延迟自动上锁。</td>
+          </tr>
+          <tr>
+            <td>最高</td>
+            <td><span class="tag int">仅内置</span></td>
+            <td><span class="tag int">仅内置</span></td>
+            <td>需解锁；只在 Crypta 内观看。切换保险箱或 App 失焦会立刻上锁。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="plain" style="margin-top: 22px;">
+        标准保险箱走外部播放时：先在 v2 播放暂存目录写出，再原子「收养」进当前进程专属会话，然后才交给别的 App。
+        扩展 / 最高里，若格式内置播不了，文件仍会安全躺在库里——不会为了「勉强播出来」去开外部明文通道。
+      </p>
+    </section>
+
+    <section id="session">
+      <span class="section-kicker">09 · 解锁会话</span>
+      <h2>解锁不是「永远打开」，而是一张可当场作废的通行证</h2>
+      <p class="lead">
+        解锁后，保险箱主钥匙只存在于明确的会话对象里。上锁会作废会话，并清掉媒体读取缓存。受保护保险箱的对象元数据，也只在认证成功后进入内存，上锁后再清掉。
+      </p>
+
+      <div class="levels">
+        <div class="level">
+          <div class="level-name">标准<small>Standard</small></div>
+          <p>本机设备封装，方便日常浏览；仍按保险箱加密存储。外部播放是唯一会主动产生临时明文副本的常规路径。</p>
+        </div>
+        <div class="level">
+          <div class="level-name">扩展<small>Extended</small></div>
+          <p>需要用户在场认证才能看内容。切换到别的保险箱后，这个保险箱可以保持解锁状态，也支持手动上锁；应用失焦后会延迟自动上锁。</p>
+        </div>
+        <div class="level">
+          <div class="level-name">最高<small>Maximum</small></div>
+          <p>每次进入都更敏感：切换保险箱或应用失焦时立即上锁。适合真正不想在桌面「晾着」的内容。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="boundary">
+      <span class="section-kicker">10 · 安全边界</span>
+      <h2>它保护「磁盘上休息时」的隐私，不是万能盾牌</h2>
+      <p class="lead">
+        说清楚边界，比空泛承诺更重要。1.3.0 的设计目标是：媒体、标题、原始扩展名、时长、播放进度、缩略图、保险箱名——在磁盘上休息时都被保护；这些值也不会发到服务器，也不会塞进迁移进度或诊断文案里。
+      </p>
+
+      <div class="split-list">
+        <div class="stay">
+          <h3>在威胁模型里</h3>
+          <ul>
+            <li>别人拿到你关机 / 未解锁状态下的磁盘副本</li>
+            <li>普通翻找文件、看文件名、偷看索引字段</li>
+            <li>篡改加密容器头部或分块</li>
+            <li>扩展 / 最高保险箱被要求「写明文给外部播放器」</li>
+          </ul>
+        </div>
+        <div class="gone">
+          <h3>明确不在模型里</h3>
+          <ul>
+            <li>操作系统本身已经完全被攻破</li>
+            <li>以你身份运行、权限足够的恶意进程</li>
+            <li>Crypta 进程自己已被注入 / 操控</li>
+            <li>标准保险箱为外部播放而短暂存在的明文副本（这是有意允许的取舍）</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="product">
+      <span class="section-kicker">11 · 产品体验</span>
+      <h2>底层换了，界面也跟着收成「更少但更清楚」</h2>
+      <p class="lead">
+        活库完全由 v2 驱动。标准保险箱的标题可以自动加载；受保护保险箱要先通过用户在场认证，元数据才进内存。图片在受保护保险箱里走内置图片窗口，而不是为了预览去铺一条明文快捷通道。
+      </p>
+
+      <div class="facts">
+        <div class="fact">
+          <h3>恢复 / 迁移界面</h3>
+          <p>新增保存恢复密钥、使用恢复密钥重新连接本机、旧库安全升级等专用流程；文案经过审核，避免把敏感细节泄漏到提示语里。</p>
+        </div>
+        <div class="fact">
+          <h3>受保护格式提示</h3>
+          <p>扩展 / 最高里播不了的格式，会明确告诉你：文件仍安全保存在 Crypta；若要播放，请转成内置播放器支持的格式后再导入。</p>
+        </div>
+        <div class="fact">
+          <h3>导入删原失败会警告</h3>
+          <p>加密副本已验证留下，但原文件删不掉时，会提示还有多少个明文原件需要你留意——不会假装「已经收拾干净」。</p>
+        </div>
+        <div class="fact">
+          <h3>解密导出同样谨慎</h3>
+          <p>导出路径强调：文件成功写出并通过验证后，才会删除保险库里的副本。宁可多留一份，也不赌「写出一半就删库」。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="removed">
+      <span class="section-kicker">12 · 这次拿掉的东西</span>
+      <h2>为了让主路径更干净，几条旁路功能被移除了</h2>
+      <p class="lead">
+        大规模重构时，一些会引入额外明文路径或复杂依赖的能力被主动拿掉，让「加密存储 + 分级访问 + 受控播放」这条主线更清晰。
+      </p>
+
+      <div class="split-list">
+        <div class="gone">
+          <h3>已移除</h3>
+          <ul>
+            <li>字幕生成（含 LLM 相关链路）</li>
+            <li>字幕嵌入与相关设置</li>
+            <li>独立的设置场景（Settings）</li>
+            <li>Quick Look 空格预览那条「明文预览」路线</li>
+            <li>旧的整套库实现与过时存储支撑代码</li>
+          </ul>
+        </div>
+        <div class="stay">
+          <h3>仍然核心</h3>
+          <ul>
+            <li>多保险箱分组（视频 / 图片）</li>
+            <li>三档加密与 Touch ID / 密码解锁</li>
+            <li>导入、重命名、排序、搜索</li>
+            <li>内置播放（受保护）与进度记忆</li>
+            <li>解密导出、恢复密钥、旧库迁移</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout">
+        <p>
+          <b>读完可以带走的心智模型：</b>
+          Crypta 1.3.0 = 本机影音保险库的「地基重建」。文件各自密封（CRYPTA02），钥匙分层保管，导入 / 迁移都先验证再丢旧件，
+          外部明文只留给标准保险箱的受控播放，扩展与最高则把内容锁在应用内。恢复密钥是你离开这台设备后的最后退路——请当真保存。
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        <strong>Crypta 1.3.0</strong> · 基于仓库内 <code>Documentation/ArchitectureV2.md</code> 与 v2 实现整理的通俗说明页。<br />
+        仅供理解架构与产品取舍，不构成安全审计结论。打开方式：用浏览器直接打开本 HTML 文件即可。
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

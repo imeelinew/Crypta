@@ -280,7 +280,7 @@ private struct AppKitVideoList: NSViewRepresentable {
         )
     }
 
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, VideoTableViewActionDelegate, HoverTableViewDelegate {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, VideoTableViewActionDelegate {
         var videos: [CryptaVideo]
         var selectedVideoIDs: Set<CryptaVideo.ID>
         var cachedThumbnail: @MainActor (CryptaVideo) -> NSImage?
@@ -291,10 +291,8 @@ private struct AppKitVideoList: NSViewRepresentable {
         var onSelectAll: () -> Void
         var onRename: (CryptaVideo) -> Void
         var onDelete: (CryptaVideo) -> Void
-        private weak var scrollView: NSScrollView?
         private weak var tableView: VideoTableView?
         private var isSyncingSelection = false
-        private var hoveredRow: Int = -1
 
         init(
             videos: [CryptaVideo],
@@ -329,10 +327,8 @@ private struct AppKitVideoList: NSViewRepresentable {
             scrollView.autohidesScrollers = true
 
             let tableView = VideoTableView()
-            self.scrollView = scrollView
             self.tableView = tableView
             tableView.actionDelegate = self
-            tableView.hoverDelegate = self
             tableView.delegate = self
             tableView.dataSource = self
             tableView.headerView = nil
@@ -350,7 +346,6 @@ private struct AppKitVideoList: NSViewRepresentable {
             tableView.addTableColumn(column)
 
             scrollView.documentView = tableView
-            installScrollObserver()
             syncSelection(in: tableView)
             return scrollView
         }
@@ -381,8 +376,6 @@ private struct AppKitVideoList: NSViewRepresentable {
             guard let tableView else { return }
             if shouldReload {
                 tableView.reloadData()
-                applyHoveredRow(-1)
-                tableView.updateHoverFromCurrentMouse()
             }
             syncSelection(in: tableView)
         }
@@ -404,9 +397,7 @@ private struct AppKitVideoList: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-            let view = HoverableRowView()
-            view.isHovered = isRowHovered(row)
-            return view
+            HoverableRowView()
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -449,16 +440,6 @@ private struct AppKitVideoList: NSViewRepresentable {
             return menu
         }
 
-        func hoverTableView(_ tableView: VideoTableView, didHoverRow row: Int) {
-            let resolved: Int
-            if videos.indices.contains(row) {
-                resolved = row
-            } else {
-                resolved = -1
-            }
-            applyHoveredRow(resolved)
-        }
-
         @objc private func renameFromMenu(_ sender: NSMenuItem) {
             guard let video = sender.representedObject as? CryptaVideo else { return }
             onRename(video)
@@ -475,44 +456,6 @@ private struct AppKitVideoList: NSViewRepresentable {
             isSyncingSelection = true
             tableView.selectRowIndexes(selectedRows, byExtendingSelection: false)
             isSyncingSelection = false
-        }
-
-        private func installScrollObserver() {
-            guard let scrollView else { return }
-            scrollView.contentView.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(contentBoundsDidChange),
-                name: NSView.boundsDidChangeNotification,
-                object: scrollView.contentView
-            )
-        }
-
-        @objc private func contentBoundsDidChange() {
-            tableView?.updateHoverFromCurrentMouse()
-        }
-
-        private func applyHoveredRow(_ row: Int) {
-            guard row != hoveredRow else { return }
-            let previous = hoveredRow
-            hoveredRow = row
-
-            guard let tableView else { return }
-            let rowCount = tableView.numberOfRows
-            if previous >= 0,
-               previous < rowCount,
-               let view = tableView.rowView(atRow: previous, makeIfNecessary: false) as? HoverableRowView {
-                view.isHovered = false
-            }
-            if row >= 0,
-               row < rowCount,
-               let view = tableView.rowView(atRow: row, makeIfNecessary: false) as? HoverableRowView {
-                view.isHovered = true
-            }
-        }
-
-        func isRowHovered(_ row: Int) -> Bool {
-            row == hoveredRow
         }
 
         private func loadThumbnail(for video: CryptaVideo, into cell: VideoTableCellView) {
@@ -537,10 +480,6 @@ private struct AppKitVideoList: NSViewRepresentable {
     }
 }
 
-private protocol HoverTableViewDelegate: AnyObject {
-    func hoverTableView(_ tableView: VideoTableView, didHoverRow row: Int)
-}
-
 private protocol VideoTableViewActionDelegate: AnyObject {
     func videoTableViewDidPressSpace(_ tableView: VideoTableView)
     func videoTableViewDidPressSelectAll(_ tableView: VideoTableView)
@@ -549,42 +488,6 @@ private protocol VideoTableViewActionDelegate: AnyObject {
 
 private final class VideoTableView: NSTableView {
     weak var actionDelegate: VideoTableViewActionDelegate?
-    weak var hoverDelegate: HoverTableViewDelegate?
-    private var hoverTrackingArea: NSTrackingArea?
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-        }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        hoverTrackingArea = area
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        let point = convert(event.locationInWindow, from: nil)
-        hoverDelegate?.hoverTableView(self, didHoverRow: row(at: point))
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        super.mouseExited(with: event)
-        hoverDelegate?.hoverTableView(self, didHoverRow: -1)
-    }
-
-    func updateHoverFromCurrentMouse() {
-        guard let window else { return }
-        let mouse = window.mouseLocationOutsideOfEventStream
-        let point = convert(mouse, from: nil)
-        let inside = bounds.contains(point) && visibleRect.contains(point)
-        hoverDelegate?.hoverTableView(self, didHoverRow: inside ? row(at: point) : -1)
-    }
 
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags
@@ -607,32 +510,16 @@ private final class VideoTableView: NSTableView {
 }
 
 private final class HoverableRowView: NSTableRowView {
-    var isHovered = false {
-        didSet {
-            guard isHovered != oldValue else { return }
-            needsDisplay = true
-        }
-    }
-
+    /// Keep list selection blue even when the table is not first responder
+    /// (e.g. on first launch while the sidebar holds focus).
     override var isEmphasized: Bool {
-        didSet {
-            guard isEmphasized != oldValue, isSelected else { return }
-            needsDisplay = true
-        }
-    }
-
-    override func drawBackground(in dirtyRect: NSRect) {
-        super.drawBackground(in: dirtyRect)
-        guard isHovered, !isSelected else { return }
-        drawRoundedBackground(color: NSColor.labelColor.withAlphaComponent(0.08))
+        get { true }
+        set {}
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
         guard selectionHighlightStyle != .none else { return }
-        let color: NSColor = isEmphasized
-            ? .selectedContentBackgroundColor
-            : .unemphasizedSelectedContentBackgroundColor
-        drawRoundedBackground(color: color)
+        drawRoundedBackground(color: .selectedContentBackgroundColor)
     }
 
     private func drawRoundedBackground(color: NSColor) {
