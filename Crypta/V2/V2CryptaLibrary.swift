@@ -14,7 +14,7 @@ nonisolated private enum V2LibraryLoadError: Error, Sendable {
 final class CryptaLibrary {
     var groups: [LibraryGroup] = []
     var selectedGroupID: String? {
-        didSet { selectFirstVideoIfNeeded() }
+        didSet { pruneVideoSelectionToVisible() }
     }
     var selectedVideoIDs: Set<CryptaVideo.ID> = [] {
         didSet { normalizePrimarySelection() }
@@ -43,23 +43,14 @@ final class CryptaLibrary {
     var recoveryAccessPresentation: RecoveryAccessPresentation?
     private(set) var isRecoveryAccessRequired = false
     private(set) var isRecoveringAccess = false
-    var migrationSheetPresented = false
-    private(set) var migrationPresentationState: MigrationPresentationState = .ready
-    private(set) var migrationProgress = V2MigrationProgress(
-        phase: .preparing,
-        completedCount: 0,
-        totalCount: 0
-    )
 
     private var store: V2VaultStore?
-    private var legacyReader: V1LegacyReader?
     private let mediaSessions: DecryptedMediaSessionManager
     private let externalApplications = ExternalMediaApplicationController()
     private var vaultRecords: [UUID: V2VaultRecord] = [:]
     private var vaultObjectCounts: [UUID: Int] = [:]
     private var objectRecords: [UUID: V2ObjectRecord] = [:]
     private var vaultSessions: [UUID: V2VaultSession] = [:]
-    private var pendingMigrationRecoveryKey: V2RecoveryKey?
 
     private var playerWindowController: PlayerWindowController?
     private var playerGroupID: String?
@@ -72,11 +63,9 @@ final class CryptaLibrary {
 
     init(
         store: V2VaultStore? = nil,
-        legacyReader: V1LegacyReader? = nil,
         mediaSessions: DecryptedMediaSessionManager? = nil
     ) {
         self.store = store
-        self.legacyReader = legacyReader
         self.mediaSessions = mediaSessions ?? .shared
         thumbnailCache.countLimit = 80
         thumbnailCache.totalCostLimit = 64 * 1024 * 1024
@@ -157,39 +146,6 @@ final class CryptaLibrary {
             try await Task.detached(priority: .utility) {
                 try store.recoverFilesystem()
             }.value
-
-            let legacyReader = legacyReader ?? V1LegacyReader()
-            self.legacyReader = legacyReader
-            let legacyExists = FileManager.default.fileExists(
-                atPath: legacyReader.locations.encryptedIndex.path
-            )
-            let migrationState = try await Task.detached(priority: .utility) {
-                try store.metadata.migrationState()
-            }.value
-
-            if legacyExists {
-                if migrationState == nil {
-                    let existingVaults = try await Task.detached(priority: .utility) {
-                        try store.metadata.loadVaults()
-                    }.value
-                    guard existingVaults.isEmpty else {
-                        throw V2Error.migrationIncomplete
-                    }
-                    recoveryKeyPresentation = RecoveryKeyPresentation(
-                        purpose: .migration,
-                        recoveryKey: try V2RecoveryKey()
-                    )
-                } else {
-                    migrationPresentationState = .ready
-                    migrationProgress = V2MigrationProgress(
-                        phase: migrationState?.phase ?? .preparing,
-                        completedCount: migrationState?.committedCount ?? 0,
-                        totalCount: migrationState?.totalCount ?? 0
-                    )
-                    migrationSheetPresented = true
-                }
-                return
-            }
 
             try await loadV2Library()
         } catch V2LibraryLoadError.recoveryRequired(let vaultID) {
@@ -560,7 +516,7 @@ final class CryptaLibrary {
             groups.append(creation.vault.libraryGroup)
             selectedGroupID = creation.vault.id.uuidString
             recoveryKeyPresentation = RecoveryKeyPresentation(
-                purpose: .vault(creation.vault.id),
+                vaultID: creation.vault.id,
                 recoveryKey: creation.recoveryKey
             )
             showToast("已创建保险箱")
@@ -671,28 +627,12 @@ final class CryptaLibrary {
 
     func confirmRecoveryKey(_ presentation: RecoveryKeyPresentation) {
         guard recoveryKeyPresentation?.id == presentation.id else { return }
-        switch presentation.purpose {
-        case .migration:
-            pendingMigrationRecoveryKey = presentation.recoveryKey
+        do {
+            try requireStore().confirmRecoveryKey(vaultID: presentation.vaultID)
+            vaultRecords[presentation.vaultID]?.recoveryConfirmed = true
             recoveryKeyPresentation = nil
-            migrationPresentationState = .ready
-            migrationProgress = V2MigrationProgress(
-                phase: .preparing,
-                completedCount: 0,
-                totalCount: 0
-            )
-            Task { @MainActor [weak self] in
-                await Task.yield()
-                self?.migrationSheetPresented = true
-            }
-        case .vault(let vaultID):
-            do {
-                try requireStore().confirmRecoveryKey(vaultID: vaultID)
-                vaultRecords[vaultID]?.recoveryConfirmed = true
-                recoveryKeyPresentation = nil
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -748,39 +688,6 @@ final class CryptaLibrary {
         }
     }
 
-    func startMigration() async {
-        guard migrationPresentationState == .ready
-                || migrationPresentationState == .failed,
-              let store,
-              let legacyReader else {
-            return
-        }
-        migrationPresentationState = .running
-        let recoveryKey = pendingMigrationRecoveryKey
-        do {
-            _ = try await Task.detached(priority: .userInitiated) {
-                try V2LegacyMigrator(
-                    source: legacyReader,
-                    target: store
-                ).migrate(
-                    recoveryKey: recoveryKey,
-                    removeLegacyAfterCommit: true
-                ) { [weak self] progress in
-                    Task { @MainActor [weak self] in
-                        self?.migrationProgress = progress
-                    }
-                }
-            }.value
-            pendingMigrationRecoveryKey = nil
-            try await loadV2Library()
-            migrationPresentationState = .complete
-            try? await Task.sleep(for: .seconds(1.2))
-            migrationSheetPresented = false
-        } catch {
-            migrationPresentationState = .failed
-        }
-    }
-
     func showToast(
         _ message: String,
         kind: CryptaToast.Kind = .success
@@ -810,7 +717,7 @@ final class CryptaLibrary {
         if selectedGroupID == groupID {
             renameRequest = nil
             deleteRequest = nil
-            selectFirstVideoIfNeeded()
+            pruneVideoSelectionToVisible()
         }
         if imageWindowGroupID == groupID {
             imageWindowController.close()
@@ -915,7 +822,7 @@ final class CryptaLibrary {
         } else if selectedGroupID == nil {
             selectedGroupID = groups.first?.id
         }
-        selectFirstVideoIfNeeded()
+        pruneVideoSelectionToVisible()
         try presentPendingStandardRecoveryIfNeeded()
     }
 
@@ -951,7 +858,7 @@ final class CryptaLibrary {
                 videos.append(object.libraryVideo)
             }
             videos = videos.sortedForDisplay()
-            selectFirstVideoIfNeeded()
+            pruneVideoSelectionToVisible()
 
             if vaultRecords[vaultID]?.recoveryConfirmed == false {
                 let key = try await Task.detached(priority: .userInitiated) {
@@ -959,7 +866,7 @@ final class CryptaLibrary {
                 }.value
                 vaultRecords[vaultID]?.recoveryConfirmed = false
                 recoveryKeyPresentation = RecoveryKeyPresentation(
-                    purpose: .vault(vaultID),
+                    vaultID: vaultID,
                     recoveryKey: key
                 )
             }
@@ -992,7 +899,7 @@ final class CryptaLibrary {
         let key = try store.replaceRecoveryKey(session: session)
         vaultRecords[vault.id]?.recoveryConfirmed = false
         recoveryKeyPresentation = RecoveryKeyPresentation(
-            purpose: .vault(vault.id),
+            vaultID: vault.id,
             recoveryKey: key
         )
     }
@@ -1305,7 +1212,7 @@ final class CryptaLibrary {
             thumbnailCache.removeObject(forKey: id as NSUUID)
             thumbnailTasks.removeValue(forKey: id)?.cancel()
         }
-        selectFirstVideoIfNeeded()
+        pruneVideoSelectionToVisible()
     }
 
     private func replace(_ updated: CryptaVideo) {
@@ -1317,24 +1224,16 @@ final class CryptaLibrary {
         videos = videos.sortedForDisplay()
     }
 
-    private func selectFirstVideoIfNeeded() {
+    private func pruneVideoSelectionToVisible() {
         let visibleIDs = Set(visibleVideos.map(\.id))
         selectedVideoIDs = selectedVideoIDs.intersection(visibleIDs)
         if let primarySelectedVideoID,
            selectedVideoIDs.contains(primarySelectedVideoID) {
             return
         }
-        if let selected = visibleVideos.first(where: {
+        primarySelectedVideoID = visibleVideos.first {
             selectedVideoIDs.contains($0.id)
-        }) {
-            primarySelectedVideoID = selected.id
-        } else if let first = visibleVideos.first {
-            selectedVideoIDs = [first.id]
-            primarySelectedVideoID = first.id
-        } else {
-            selectedVideoIDs.removeAll()
-            primarySelectedVideoID = nil
-        }
+        }?.id
     }
 
     private func normalizePrimarySelection() {

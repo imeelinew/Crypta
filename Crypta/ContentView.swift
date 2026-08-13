@@ -116,9 +116,6 @@ struct ContentView: View {
                 presentation: presentation
             )
         }
-        .sheet(isPresented: $library.migrationSheetPresented) {
-            MigrationSheet(library: library)
-        }
         .sheet(item: $library.editGroupRequest) { request in
             EditGroupNameSheet(request: request) { newName in
                 Task { await library.renameGroup(request, to: newName) }

@@ -33,18 +33,6 @@ nonisolated enum ApprovedCopy {
     static let recoveryAccessFailure = "无法恢复访问，请稍后重试。"
     static let recoveryFileDefaultName = "Crypta 恢复密钥.txt"
 
-    static let migrationTitle = "升级 Crypta 保险库"
-    static let migrationMessage =
-        "Crypta 将在本机重新加密现有文件。每个文件只有在新副本通过完整性验证后，才会删除原副本。"
-    static let migrationStartButton = "开始安全升级"
-    static let migrationComplete = "保险库升级完成"
-    static let migrationFailureMessage =
-        "保险库升级未完成。Crypta 已保留可用数据，你可以稍后重试。"
-
-    static func migrationProgress(current: Int, total: Int) -> String {
-        "正在处理第 \(current) 项，共 \(total) 项"
-    }
-
     static let importSourceCleanupTitle = "原文件未能删除"
 
     static func importSourceCleanupWarning(count: Int) -> String {

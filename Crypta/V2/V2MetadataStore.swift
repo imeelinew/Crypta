@@ -36,22 +36,6 @@ nonisolated struct V2ObjectLocator: Equatable, Sendable {
     let blobName: String
 }
 
-nonisolated enum V2MigrationPhase: String, Codable, Sendable {
-    case preparing
-    case copying
-    case verifying
-    case cleaningLegacy
-    case complete
-}
-
-nonisolated struct V2MigrationState: Equatable, Sendable {
-    let phase: V2MigrationPhase
-    let totalCount: Int
-    let committedCount: Int
-    let startedAt: Date
-    let updatedAt: Date
-}
-
 nonisolated final class V2MetadataStore: @unchecked Sendable {
     private static let schemaVersion: Int32 = 3
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -121,32 +105,6 @@ nonisolated final class V2MetadataStore: @unchecked Sendable {
                 throw V2Error.duplicateVaultName
             }
             try insertVaultUnlocked(vault)
-        }
-    }
-
-    func createMigrationVaults(
-        _ vaults: [V2VaultRecord],
-        state: V2MigrationState
-    ) throws {
-        try withTransaction {
-            guard try scalarInt("SELECT COUNT(*) FROM vaults") == 0,
-                  try scalarInt("SELECT COUNT(*) FROM migration_state") == 0,
-                  Set(vaults.map(\.id)).count == vaults.count else {
-                throw V2Error.migrationIncomplete
-            }
-            let normalizedNames = vaults.map {
-                $0.name.folding(
-                    options: [.caseInsensitive, .diacriticInsensitive],
-                    locale: .current
-                )
-            }
-            guard Set(normalizedNames).count == normalizedNames.count else {
-                throw V2Error.duplicateVaultName
-            }
-            for vault in vaults {
-                try insertVaultUnlocked(vault)
-            }
-            try saveMigrationStateUnlocked(state)
         }
     }
 
@@ -429,37 +387,6 @@ nonisolated final class V2MetadataStore: @unchecked Sendable {
         }
     }
 
-    func migrationState() throws -> V2MigrationState? {
-        try withLock {
-            var result: V2MigrationState?
-            try query(
-                """
-                SELECT phase, total_count, committed_count, started_at, updated_at
-                FROM migration_state WHERE id = 1
-                """
-            ) { statement in
-                let phaseValue = try columnString(statement, index: 0)
-                guard let phase = V2MigrationPhase(rawValue: phaseValue) else {
-                    throw V2Error.databaseFailure("migration-phase")
-                }
-                result = V2MigrationState(
-                    phase: phase,
-                    totalCount: Int(sqlite3_column_int64(statement, 1)),
-                    committedCount: Int(sqlite3_column_int64(statement, 2)),
-                    startedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
-                )
-            }
-            return result
-        }
-    }
-
-    func saveMigrationState(_ state: V2MigrationState) throws {
-        try withLock {
-            try saveMigrationStateUnlocked(state)
-        }
-    }
-
     func integrityCheck() throws {
         try withLock {
             var result = ""
@@ -685,28 +612,6 @@ nonisolated final class V2MetadataStore: @unchecked Sendable {
             try bind(recoveryEnvelope, to: 8, in: statement)
             try bind(vault.recoveryConfirmed ? Int64(1) : Int64(0), to: 9, in: statement)
             try bind(vault.createdAt.timeIntervalSince1970, to: 10, in: statement)
-        }
-    }
-
-    private func saveMigrationStateUnlocked(_ state: V2MigrationState) throws {
-        try executePrepared(
-            """
-            INSERT INTO migration_state (
-                id, phase, total_count, committed_count, started_at, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                phase = excluded.phase,
-                total_count = excluded.total_count,
-                committed_count = excluded.committed_count,
-                started_at = excluded.started_at,
-                updated_at = excluded.updated_at
-            """
-        ) { statement in
-            try bind(state.phase.rawValue, to: 1, in: statement)
-            try bind(Int64(state.totalCount), to: 2, in: statement)
-            try bind(Int64(state.committedCount), to: 3, in: statement)
-            try bind(state.startedAt.timeIntervalSince1970, to: 4, in: statement)
-            try bind(state.updatedAt.timeIntervalSince1970, to: 5, in: statement)
         }
     }
 

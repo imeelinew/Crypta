@@ -31,21 +31,9 @@ nonisolated extension V2ObjectRecord {
 }
 
 nonisolated struct RecoveryKeyPresentation: Identifiable, Sendable {
-    enum Purpose: Sendable, Equatable {
-        case migration
-        case vault(UUID)
-    }
-
     let id = UUID()
-    let purpose: Purpose
+    let vaultID: UUID
     let recoveryKey: V2RecoveryKey
-}
-
-nonisolated enum MigrationPresentationState: Equatable, Sendable {
-    case ready
-    case running
-    case complete
-    case failed
 }
 
 nonisolated struct RecoveryAccessPresentation: Identifiable, Sendable {

@@ -1,5 +1,4 @@
 import CryptoKit
-import Darwin.Mach
 import Foundation
 import Testing
 @testable import Crypta
@@ -255,82 +254,6 @@ struct V2CryptoTests {
         }
     }
 
-    @Test func largeLegacyTranscodeKeepsResidentMemoryBounded() throws {
-        try withTemporaryDirectory { directory in
-            let legacyURL = directory.appendingPathComponent("synthetic-v1.enc")
-            let containerURL = directory.appendingPathComponent("synthetic-v2.c2")
-            let legacyKey = SymmetricKey(size: .bits256)
-            let chunkCount = 64
-            let plaintextByteCount = chunkCount * EncryptedMediaFormat.plaintextChunkSize
-
-            guard FileManager.default.createFile(
-                atPath: legacyURL.path,
-                contents: nil
-            ) else {
-                throw V2Error.unsafePath
-            }
-            let legacyOutput = try FileHandle(forWritingTo: legacyURL)
-            do {
-                for index in 0..<chunkCount {
-                    try autoreleasepool {
-                        let plaintext = Data(
-                            repeating: UInt8(truncatingIfNeeded: index),
-                            count: EncryptedMediaFormat.plaintextChunkSize
-                        )
-                        let sealed = try AES.GCM.seal(plaintext, using: legacyKey)
-                        let combined = try #require(sealed.combined)
-                        try legacyOutput.write(
-                            contentsOf: EncryptedMediaFormat.lengthPrefix(
-                                for: combined.count
-                            )
-                        )
-                        try legacyOutput.write(contentsOf: combined)
-                    }
-                }
-                try legacyOutput.synchronize()
-                try legacyOutput.close()
-            } catch {
-                try? legacyOutput.close()
-                throw error
-            }
-
-            let baseline = try currentResidentMemory()
-            let sampler = ResidentMemorySampler()
-            sampler.start()
-            defer { sampler.stop() }
-
-            let input = try V1EncryptedPlaintextInput(
-                sourceURL: legacyURL,
-                key: legacyKey
-            )
-            #expect(input.byteCount == Int64(plaintextByteCount))
-            let vaultID = UUID()
-            let masterKey = SymmetricKey(size: .bits256)
-            let descriptor = try V2MediaContainer.encrypt(
-                input: input,
-                to: containerURL,
-                vaultID: vaultID,
-                masterKey: masterKey
-            )
-            #expect(descriptor.plaintextLength == Int64(plaintextByteCount))
-
-            let reader = try V2MediaReader(
-                sourceURL: containerURL,
-                expectedVaultID: vaultID,
-                masterKey: masterKey,
-                maximumCacheBytes: 0
-            )
-            _ = try reader.verifyAllChunks()
-            sampler.stop()
-
-            let residentGrowth = sampler.maximumResidentMemory - baseline
-            #expect(
-                residentGrowth < 256 * 1024 * 1024,
-                "A 256 MiB transcode grew resident memory by \(residentGrowth) bytes"
-            )
-        }
-    }
-
     private func withTemporaryDirectory(
         _ operation: (URL) throws -> Void
     ) throws {
@@ -371,79 +294,6 @@ struct V2CryptoTests {
         try handle.write(contentsOf: second)
         try handle.write(contentsOf: first)
         try handle.close()
-    }
-}
-
-private nonisolated func currentResidentMemory() throws -> UInt64 {
-    var info = mach_task_basic_info_data_t()
-    var count = mach_msg_type_number_t(
-        MemoryLayout.size(ofValue: info) / MemoryLayout<natural_t>.size
-    )
-    let status = withUnsafeMutablePointer(to: &info) { pointer in
-        pointer.withMemoryRebound(
-            to: integer_t.self,
-            capacity: Int(count)
-        ) {
-            task_info(
-                mach_task_self_,
-                task_flavor_t(MACH_TASK_BASIC_INFO),
-                $0,
-                &count
-            )
-        }
-    }
-    guard status == KERN_SUCCESS else {
-        throw V2Error.databaseFailure("resident-memory")
-    }
-    return info.resident_size
-}
-
-private nonisolated final class ResidentMemorySampler: @unchecked Sendable {
-    private let lock = NSLock()
-    private let finished = DispatchSemaphore(value: 0)
-    private var running = false
-    private var maximum: UInt64 = 0
-
-    var maximumResidentMemory: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return maximum
-    }
-
-    func start() {
-        lock.lock()
-        guard !running else {
-            lock.unlock()
-            return
-        }
-        running = true
-        maximum = (try? currentResidentMemory()) ?? 0
-        lock.unlock()
-
-        Thread.detachNewThread { [self] in
-            while true {
-                lock.lock()
-                let shouldContinue = running
-                if let sample = try? currentResidentMemory() {
-                    maximum = max(maximum, sample)
-                }
-                lock.unlock()
-                guard shouldContinue else { break }
-                usleep(10_000)
-            }
-            finished.signal()
-        }
-    }
-
-    func stop() {
-        lock.lock()
-        guard running else {
-            lock.unlock()
-            return
-        }
-        running = false
-        lock.unlock()
-        finished.wait()
     }
 }
 

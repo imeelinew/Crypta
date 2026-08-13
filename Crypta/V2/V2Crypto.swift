@@ -20,8 +20,6 @@ nonisolated enum V2Error: Error, Equatable {
     case keychainFailure(OSStatus)
     case sessionLocked
     case unsafePath
-    case migrationAlreadyRunning
-    case migrationIncomplete
 }
 
 nonisolated enum V2Crypto {
