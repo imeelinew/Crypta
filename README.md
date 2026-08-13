@@ -25,6 +25,7 @@
   <a href="https://github.com/imeelinew/Crypta/releases/latest"><img src="https://img.shields.io/github/v/release/imeelinew/Crypta" alt="Release"></a>
   <img src="https://img.shields.io/badge/macOS-26%2B-black" alt="macOS 26+">
   <img src="https://img.shields.io/badge/Swift-6-orange" alt="Swift 6">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
 ---
@@ -90,3 +91,7 @@ open Crypta.xcodeproj
 ```
 
 在 Xcode 中选择 **Crypta** scheme，然后 **Product → Run**。
+
+## 许可
+
+本项目采用 [MIT License](LICENSE)。
