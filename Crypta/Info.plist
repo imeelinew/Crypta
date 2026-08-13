@@ -52,6 +52,12 @@
 	<string></string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUFeedURL</key>
+	<string>https://imeelinew.github.io/Crypta/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>mAIQ4nCtC1Sdc9QjQSKVyzvpgaZDbqDrm8rIi+tiiY8=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

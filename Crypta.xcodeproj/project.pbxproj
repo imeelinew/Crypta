@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		45B1E0032FD1532400F8A862 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 45B1E0022FD1532400F8A862 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		451AD4302FD1532400F8A862 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -66,6 +70,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				45B1E0032FD1532400F8A862 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -127,6 +132,7 @@
 			);
 			name = Crypta;
 			packageProductDependencies = (
+				45B1E0022FD1532400F8A862 /* Sparkle */,
 			);
 			productName = Crypta;
 			productReference = 451AD4222FD1532300F8A862 /* Crypta.app */;
@@ -211,6 +217,9 @@
 			);
 			mainGroup = 451AD4192FD1532300F8A862;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				45B1E0012FD1532400F8A862 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 451AD4232FD1532300F8A862 /* Products */;
 			projectDirPath = "";
@@ -591,6 +600,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		45B1E0012FD1532400F8A862 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		45B1E0022FD1532400F8A862 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 45B1E0012FD1532400F8A862 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 451AD41A2FD1532300F8A862 /* Project object */;
 }

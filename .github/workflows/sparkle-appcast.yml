@@ -1,0 +1,81 @@
+name: Update Sparkle appcast
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sparkle-appcast
+  cancel-in-progress: false
+
+jobs:
+  appcast:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download release ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sparkle-archives"
+          zip_count="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '[.assets[] | select(.name | endswith(".zip"))] | length')"
+          if [ "$zip_count" -ne 1 ]; then
+            echo "Expected exactly one .zip asset, found $zip_count"
+            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name'
+            exit 1
+          fi
+          zip_name="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | select(.name | endswith(".zip")) | .name')"
+          gh release download "$GITHUB_REF_NAME" --pattern "$zip_name" --dir "$RUNNER_TEMP/sparkle-archives"
+
+      - name: Download Sparkle tools
+        run: |
+          set -euo pipefail
+          sparkle_version="$(sed -n '1p' .github/sparkle-version)"
+          sparkle_sha256="$(sed -n '2p' .github/sparkle-version)"
+          curl -fsSL -o "$RUNNER_TEMP/Sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${sparkle_version}/Sparkle-${sparkle_version}.tar.xz"
+          echo "${sparkle_sha256}  $RUNNER_TEMP/Sparkle.tar.xz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/sparkle-tools"
+          tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle-tools"
+
+      - name: Generate appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SPARKLE_PRIVATE_KEY:-}" ]; then
+            echo "SPARKLE_PRIVATE_KEY secret is missing"
+            exit 1
+          fi
+          mkdir -p docs
+          if [ -f docs/appcast.xml ]; then
+            cp docs/appcast.xml "$RUNNER_TEMP/sparkle-archives/appcast.xml"
+          fi
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle-tools/bin/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            --maximum-deltas 0 \
+            "$RUNNER_TEMP/sparkle-archives"
+          cp "$RUNNER_TEMP/sparkle-archives/appcast.xml" docs/appcast.xml
+          grep -q 'sparkle:edSignature' docs/appcast.xml
+
+      - name: Commit appcast
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/appcast.xml
+          if git diff --cached --quiet; then
+            echo "Appcast unchanged"
+            exit 0
+          fi
+          git commit -m "Update Sparkle appcast for ${GITHUB_REF_NAME}"
+          git push origin HEAD:main

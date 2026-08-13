@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import SwiftUI
 
 private enum CryptaRuntime {
@@ -24,6 +25,9 @@ struct CryptaApp: App {
                 }
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: appDelegate.updaterController.updater)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("新建保险箱") {
                     library.newGroupFormPresented = true
@@ -38,9 +42,16 @@ struct CryptaApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: false,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         guard !CryptaRuntime.isRunningTests else { return }
+        updaterController.startUpdater()
         try? DecryptedMediaSessionManager.shared.start()
     }
 
